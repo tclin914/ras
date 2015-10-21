@@ -6,9 +6,12 @@
 #include <netdb.h>
 
 #include <unistd.h>
+#include <sys/wait.h>
+#include <dirent.h>
+
 #include <string.h>
 
-#define DEBUG
+/* #define DEBUG */
 
 void doprocessing(int sockfd); 
 void handler(int fd);
@@ -17,6 +20,8 @@ int sockfd;
 
 int main(int argc, const char *argv[])
 {
+    int ret = chdir("/u/gcs/103/0356100/ras/dir");
+
     int newsockfd, portno, clilen;
     char buffer[256];
     struct sockaddr_in serv_addr, cli_addr;
@@ -77,27 +82,248 @@ int main(int argc, const char *argv[])
     return 0;
 }
 
+typedef enum { 
+    E_proc = 0, 
+    E_argv = 1, 
+    E_stdout = 2, 
+    E_stderr = 3,
+    E_outfile = 4
+} CommandType;
+
+typedef struct _Command {
+    CommandType commandType;
+    char *path;
+    char *command;
+    struct _Command *next;
+} Command;
+
+const char *commandset[] = { "exit","printenv", "setenv", "ls", "cat", 
+    "removetag", "removetag0", "number"};
+const char *unknown = "Unknown command: [%s].\n";
+char *defaultPath[] = {"bin", "."};
+
+char *getExec(const char *path, const char *exec) {
+    DIR *dirp;
+    struct dirent *direntp;
+    if ((dirp = opendir(path)) == NULL) {
+        printf("ERROR opening directory fail");
+        return NULL;
+    }
+    while ((direntp = readdir(dirp)) != NULL ) {
+        if (strcmp(exec, direntp->d_name) == 0) {
+            char *result = (char*)malloc(sizeof(char) * (strlen(path) + strlen(direntp->d_name) + 2));
+            sprintf(result, "%s/%s", path, direntp->d_name);
+            closedir(dirp);
+            return result;
+        }   
+    }
+    closedir(dirp);
+    return NULL;
+}
+
+Command *parseCommands(char *commands) {
+
+    int num = 0;
+    Command *head, *pre = NULL;
+    int len = strlen(commands);
+    for (unsigned pos = 0; pos < len; pos++) {
+
+        CommandType type;
+
+        while (*commands == ' ') {
+            pos++;
+            commands++;
+        }
+
+        if (pre == NULL)
+            type = E_proc;
+        else
+            type = E_argv;
+
+        if (*commands == '|' && *(commands + 1) == ' ') {
+            type = E_proc;    
+            pos++;
+            commands++;
+        } else if (*commands == '>' && *(commands + 1) == ' ') {
+            type = E_outfile;
+            pos++;
+            commands++;
+        }
+
+        while (*commands == ' ') {
+            pos++;
+            commands++;
+        }
+
+        // split commands
+        int count = 0;
+        while (commands[count] != ' ' && commands[count] != '\0') {
+            count++;
+            pos++;
+        }
+        char *command = (char*)malloc(sizeof(char) * (count + 1));
+        memcpy(command, commands, count);
+        command[count] = '\0';
+        commands += count;
+
+        if (command[0] == '|') {
+            type = E_stdout;
+        }
+
+        if (command[0] == '!') {
+            type = E_stderr;
+        }
+
+        Command *current = (Command*)malloc(sizeof(Command));
+
+        current->path = NULL;
+        // get executable file by env
+        if (type == E_proc) {
+            for (int i = 0; i < sizeof(defaultPath) / sizeof(char*); i++) {
+                if ((current->path = getExec(defaultPath[i], command)) != NULL) {
+                    break;
+                }
+            }
+        }
+        current->command = command;
+        current->commandType = type;
+        // Example:
+        // current->path = bin/ls
+        // current->command = ls
+        // current->commandType = E_proc
+        if (pre == NULL) { 
+            head = current;
+            pre = current;
+        } else {
+            pre->next = current;
+            pre = current;
+        }
+    }
+    return head;
+}
+
+
+int run(int sockfd, int readfd, Command *command) {
+    Command *proc = command;
+    Command *temp = command;
+
+    int count = 0;
+    while (command->next != NULL && command->next->commandType == E_argv) {
+        command = command->next;
+        count++;
+    }
+
+    char *arguments[count + 1];
+    bzero(arguments, count + 1);
+    /* char cl[277]; // 256 + 20 + 1 unknown */
+    int n;
+    switch (proc->commandType) {
+        case E_proc:
+            if (proc->path == NULL) {
+                char buf[277]; // 256 + 20 + 1 unknown
+                sprintf(buf, unknown,proc->command);
+                n = write(sockfd, buf, strlen(buf));
+                if (n < 0) {
+                    perror("ERROR writing unknown command to socket");       
+                }        
+                return -1;
+            }
+            arguments[0] = proc->command;
+            for (unsigned i = 1; i < count + 1; i++) {
+                arguments[i] = temp->next->command;
+                temp = temp->next;
+            }
+            arguments[count + 1] = NULL;
+                    
+            pid_t pid;
+            int status;
+
+            int pfd[2];
+            if (pipe(pfd) < 0) {
+                printf("ERROR creating a pipe");
+                exit(1);
+            }
+
+            pid = fork();
+
+            if (pid < 0) {
+                perror("ERROR on fork");
+                exit(1);
+            }
+
+            if (pid == 0) {
+                        
+                printf("pfd[0] = %d pfd[1] = %d\n", pfd[0], pfd[1]);
+                printf("readfd = %d\n", readfd);
+
+                if (command->next == NULL) { // command end
+                    dup2(sockfd, 1);
+                    dup2(readfd, 0);
+                    close(pfd[0]);
+                    close(pfd[1]);
+                } else if(command->next->commandType == E_outfile) { // redirect data to file (> xxx)
+                    FILE *file;
+                    file = fopen(command->next->command, "w");
+                    dup2(fileno(file), 1);
+                    dup2(readfd, 0);
+                    close(pfd[0]);
+                    close(pfd[1]);
+                } else {
+                    dup2(pfd[1], 1);
+                    dup2(readfd, 0);
+                    close(pfd[0]);
+                }
+
+                execv(proc->path, arguments);
+                exit(0);
+            } else {
+            
+                printf("pdf[0] = %d pdf[1] = %d\n", pfd[0], pfd[1]);
+
+                close(pfd[1]);
+                waitpid((pid_t)pid, &status, 0); 
+                 
+                return pfd[0];
+            }   
+            break;
+        case E_argv:
+
+            break;
+
+        case E_stdout:
+
+            break;
+
+        case E_stderr:
+
+            break;   
+
+        case E_outfile:
+            
+            break;
+    }
+}
+
 void doprocessing(int sockfd) {
     int n;
     int bufferSize = 15001;
     char buffer[bufferSize];
     bzero(buffer, bufferSize);
-    char *defaultPath[] = {"bin", "."};
 
     const char *welcome = 
         "****************************************\n"
         "** Welcome to the information server. **\n"
         "****************************************\n";
     const char *prompt = "% ";
-    const char *commandset[] = { "exit", "|", "printenv", "setenv", "ls"};
-    const char *unknown = "Unknown command: [%s].\n";
 
     n = write(sockfd, welcome, strlen(welcome) + 1);
     if (n < 0) {
         perror("ERROR writing welcome information to socket");
         exit(1);
     }
+    int fdlist[1000];
 
+    int valfd = 0;
     while (1) {
         n = write(sockfd, prompt, strlen(prompt));
         if (n < 0) {
@@ -110,7 +336,7 @@ void doprocessing(int sockfd) {
             exit(1);
         }
 
-        // Replace enter key and next line character
+        // replace enter key and next line character
         buffer[n] = 0;
         buffer[n - 1] = 0;
         buffer[n - 2] = '\0';
@@ -120,118 +346,41 @@ void doprocessing(int sockfd) {
         n = write(sockfd, "I got your message\n", 19);
 #endif
 
-        char first[257];
-        char argv[257];
-        bzero(first, 257);
-        bzero(argv, 257);
-
         char *commands = buffer;
-        for (unsigned pos = 0; pos < strlen(buffer); pos++) {
-
-            while (*commands == ' ') {
-                pos++;
-                commands++;
-            }
-
-            char command[257];
-            bzero(command, 257);
-
-            int pfd[2];
-            if (pipe(pfd) < 0) {
-                printf("ERROR creating a pipe");
-                exit(1);
-            }
+        Command *head = parseCommands(commands);
+        Command *go = head;
+        int retfd;
+        while (go != NULL) {
+            printf("commandPath = %s\n", go->path);
+            printf("command = %s\n", go->command);
+            printf("type = %d\n", go->commandType);
+            fflush(stdout);
             
-            printf("pfd[0]=%d pfd[1]=%d\n", pfd[0], pfd[1]);
-
-            // split commands
-            int count = 0;
-            while (commands[count] != ' ' && commands[count] != '\0') {
-                count++;
-                pos++;
-            }
-            memcpy(command, commands, count);
-            command[count] = '\0';
-            commands += count;
-
-            if(!first) {
-                memcpy(first, command, count + 1);
-            } else if (!argv) {
-                memcpy(argv, command, count + 1);
-            }
-
-            // exit
-            if (strcmp(command, commandset[0]) == 0) {
-                close(sockfd);
-                return;
-
-            // |
-            } else if (strcmp(command, commandset[1]) == 0) {
-                              
-
-            // printenv
-            } else if (strcmp(command, commandset[2]) == 0) {
-                char path[258]; // 256 + 1 + 1
-                char paths[15001] = {'P', 'A', 'T', 'H', '=', '\0'};
-                bzero(path, 258);
-
-                if (sizeof(defaultPath) / sizeof(char*) > 0) {
-                    strcat(paths, defaultPath[0]);
-                }
-                for (unsigned i = 1; i < sizeof(defaultPath) / sizeof(char*); i++) {
-                    sprintf(path, ":%s", defaultPath[i]);   
-                    strcat(paths, path);
-                }
-                strcat(paths, "\n");
-                printf(paths);
-                fflush(stdout);
-                n  = write(sockfd, paths, strlen(paths));
-                if (n < 0) {
-                    perror("ERROR writing printenv");
-                    exit(1);
-                }
-            // setenv
-            } else if (strcmp(command, commandset[3]) == 0) {
-            
-            // ls
-            } else if (strcmp(command, commandset[4]) == 0) {
-                pid_t pid;
-                int status;
-                pid = fork();
-
-                if (pid < 0) {
-                    perror("ERROR on fork");
-                    exit(1);
-                }
-
-                if (pid == 0) {
-                    dup2(sockfd, 1);
-                    close(pfd[0]);
-
-                    execlp("./dir/bin/ls", "ls", "dir", NULL);              
-                    exit(0);
-                } else {
-                    waitpid((pid_t)pid, &status, 0); 
-                }   
+            retfd = run(sockfd, valfd, go);
+            if (retfd == -1) { // Unknown command
                 
-            } else {
-                // unknown command
-                char cl[300];
-                bzero(cl, 300);
-                sprintf(cl, unknown, command);
-                n = write(sockfd, cl, strlen(cl));
-                if (n < 0) {
-                    perror("ERROR writing unknown command");
-                    exit(1);
-                }
-                break;
+            } else e
+                valfd = retfd;
             }
+    
+            printf("retfd = %d\n", retfd);
+            fflush(stdout);
+
+            while (go->next != NULL && go->next->commandType == E_argv) {
+                go = go->next;
+            }
+            go = go->next;
         }
-        dup2(sockfd, 1)
+
+        // free linked list
+        Command *tmp;
+        while (head != NULL) {
+            tmp = head;
+            head = head->next;
+            free(tmp);
+        }
         bzero(buffer, bufferSize);
     }
-    
-
     if (n < 0) {
         perror("ERROR writing to socket");
         exit(1);
