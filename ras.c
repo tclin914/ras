@@ -97,8 +97,6 @@ typedef struct _Command {
     struct _Command *next;
 } Command;
 
-const char *commandset[] = { "exit","printenv", "setenv", "ls", "cat", 
-    "removetag", "removetag0", "number"};
 const char *unknown = "Unknown command: [%s].\n";
 char *defaultPath[] = {"bin", "."};
 
@@ -220,6 +218,10 @@ int run(int sockfd, int readfd, Command *command) {
     switch (proc->commandType) {
         case E_proc:
             if (proc->path == NULL) {
+                if (strcmp(proc->path, "exit")) {
+                    close(sockfd);
+                    exit(0);
+                }
                 char buf[277]; // 256 + 20 + 1 unknown
                 sprintf(buf, unknown,proc->command);
                 n = write(sockfd, buf, strlen(buf));
@@ -359,7 +361,7 @@ void doprocessing(int sockfd) {
             retfd = run(sockfd, valfd, go);
             if (retfd == -1) { // Unknown command
                 
-            } else e
+            } else {
                 valfd = retfd;
             }
     
@@ -377,6 +379,8 @@ void doprocessing(int sockfd) {
         while (head != NULL) {
             tmp = head;
             head = head->next;
+            free(tmp->command);
+            free(tmp->path);
             free(tmp);
         }
         bzero(buffer, bufferSize);
