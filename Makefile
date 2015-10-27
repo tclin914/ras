@@ -1,5 +1,5 @@
 ../ras: ras.c
-	gcc $< -o $@
+	gcc -g $< -o $@
 
 clean: 
 	rm ../ras

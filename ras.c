@@ -90,11 +90,11 @@ typedef enum {
     E_outfile = 4
 } CommandType;
 
-typedef struct _Command {
+typedef struct Command {
     CommandType commandType;
     char *path;
     char *command;
-    struct _Command *next;
+    struct Command *next;
 } Command;
 
 const char *unknown = "Unknown command: [%s].\n";
@@ -153,12 +153,25 @@ Command *parseCommands(char *commands) {
             commands++;
         }
 
+        if (*commands == '|') {
+            type = E_stdout;
+            pos++;
+            commands++;
+        }
+
+        if (*commands == '!') {
+            type = E_stderr;
+            pos++;
+            commands++;
+        }
+
         // split commands
         int count = 0;
         while (commands[count] != ' ' && commands[count] != '\0') {
             count++;
             pos++;
         }
+
         char *command = (char*)malloc(sizeof(char) * (count + 1));
         memcpy(command, commands, count);
         command[count] = '\0';
@@ -185,6 +198,11 @@ Command *parseCommands(char *commands) {
         }
         current->command = command;
         current->commandType = type;
+        /* printf("================\n"); */
+        /* printf("command = %s\n", command); */
+        /* printf("commandType = %d\n", type); */
+        /* printf("commandPath = %s\n", current->path); */
+        /* printf("================\n"); */
         // Example:
         // current->path = bin/ls
         // current->command = ls
@@ -201,11 +219,12 @@ Command *parseCommands(char *commands) {
 }
 
 
-int run(int sockfd, int readfd, Command *command) {
+int run(int sockfd, int readfd, Command *command, int *index, int *status) {
     Command *proc = command;
     Command *temp = command;
 
     int count = 0;
+    // get arguments
     while (command->next != NULL && command->next->commandType == E_argv) {
         command = command->next;
         count++;
@@ -213,23 +232,29 @@ int run(int sockfd, int readfd, Command *command) {
 
     char *arguments[count + 1];
     bzero(arguments, count + 1);
-    /* char cl[277]; // 256 + 20 + 1 unknown */
     int n;
+    char buf[277]; // 256 + 20 + 1 unknown
     switch (proc->commandType) {
         case E_proc:
             if (proc->path == NULL) {
-                if (strcmp(proc->path, "exit")) {
+                if (strcmp(proc->command, "exit") == 0) {
+                    printf("exit");
                     close(sockfd);
                     exit(0);
                 }
-                char buf[277]; // 256 + 20 + 1 unknown
-                sprintf(buf, unknown,proc->command);
+                // unknown command
+                bzero(buf, 277);
+                printf("debug\n");
+                sprintf(buf, unknown, proc->command);
                 n = write(sockfd, buf, strlen(buf));
                 if (n < 0) {
                     perror("ERROR writing unknown command to socket");       
                 }        
-                return -1;
+                *index = 1;
+                *status = -1;
+                return readfd;
             }
+            // get arguments
             arguments[0] = proc->command;
             for (unsigned i = 1; i < count + 1; i++) {
                 arguments[i] = temp->next->command;
@@ -238,7 +263,7 @@ int run(int sockfd, int readfd, Command *command) {
             arguments[count + 1] = NULL;
                     
             pid_t pid;
-            int status;
+            int status_pid;
 
             int pfd[2];
             if (pipe(pfd) < 0) {
@@ -259,8 +284,9 @@ int run(int sockfd, int readfd, Command *command) {
                 printf("readfd = %d\n", readfd);
 
                 if (command->next == NULL) { // command end
-                    dup2(sockfd, 1);
-                    dup2(readfd, 0);
+                    dup2(sockfd, 1); // replace stdout with sockfd
+                    dup2(sockfd, 2); // replace stderr with sockfd
+                    dup2(readfd, 0); 
                     close(pfd[0]);
                     close(pfd[1]);
                 } else if(command->next->commandType == E_outfile) { // redirect data to file (> xxx)
@@ -279,12 +305,11 @@ int run(int sockfd, int readfd, Command *command) {
                 execv(proc->path, arguments);
                 exit(0);
             } else {
-            
-                printf("pdf[0] = %d pdf[1] = %d\n", pfd[0], pfd[1]);
-
                 close(pfd[1]);
-                waitpid((pid_t)pid, &status, 0); 
-                 
+                waitpid((pid_t)pid, &status_pid, 0); 
+                
+                *index = 0;
+                *status = 0;
                 return pfd[0];
             }   
             break;
@@ -293,7 +318,10 @@ int run(int sockfd, int readfd, Command *command) {
             break;
 
         case E_stdout:
-
+            printf("DEBUG %s\n", proc->command);          
+            *index = atoi(proc->command);
+            *status = 0;
+            return readfd;
             break;
 
         case E_stderr:
@@ -323,9 +351,9 @@ void doprocessing(int sockfd) {
         perror("ERROR writing welcome information to socket");
         exit(1);
     }
-    int fdlist[1000];
+    int fdlist[1000] = {0};
+    int counter = 0;
 
-    int valfd = 0;
     while (1) {
         n = write(sockfd, prompt, strlen(prompt));
         if (n < 0) {
@@ -351,38 +379,39 @@ void doprocessing(int sockfd) {
         char *commands = buffer;
         Command *head = parseCommands(commands);
         Command *go = head;
+        int index , status = 0;
         int retfd;
-        while (go != NULL) {
+        int readfd = fdlist[counter % 1000];
+        printf("counter = %d\n", counter);
+        while (go != NULL && status == 0) {
             printf("commandPath = %s\n", go->path);
             printf("command = %s\n", go->command);
             printf("type = %d\n", go->commandType);
             fflush(stdout);
             
-            retfd = run(sockfd, valfd, go);
-            if (retfd == -1) { // Unknown command
-                
-            } else {
-                valfd = retfd;
-            }
-    
+            retfd = run(sockfd, readfd, go, &index, &status);
+ 
+            fdlist[(counter + index) % 1000] = retfd;
+            printf("fdlist[(%d + %d) % 1000] = %d\n", counter, index, retfd);
+
+            readfd = fdlist[counter % 1000];
             printf("retfd = %d\n", retfd);
             fflush(stdout);
-
             while (go->next != NULL && go->next->commandType == E_argv) {
                 go = go->next;
             }
             go = go->next;
         }
-
         // free linked list
         Command *tmp;
         while (head != NULL) {
             tmp = head;
             head = head->next;
-            free(tmp->command);
-            free(tmp->path);
             free(tmp);
         }
+        // reset
+        fdlist[counter % 1000] = 0;
+        counter++;
         bzero(buffer, bufferSize);
     }
     if (n < 0) {
