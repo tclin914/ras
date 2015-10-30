@@ -1,4 +1,4 @@
-../ras: ras.c
+./ras: ras.c
 	gcc -g $< -o $@
 
 clean: 

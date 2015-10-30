@@ -4,18 +4,34 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netdb.h>
-
 #include <unistd.h>
 #include <sys/wait.h>
 #include <dirent.h>
-
 #include <string.h>
 
-/* #define DEBUG */
+#define STDIN 0
+#define STDOUT 1
+#define STDERR 2
+
+typedef enum { 
+    e_proc = 0, 
+    e_argv = 1, 
+    e_stdout = 2, 
+    e_stderr = 3,
+    e_outfile = 4
+} CommandType;
+
+typedef struct Command {
+    CommandType commandType;
+    char *path;
+    char *command;
+    struct Command *next;
+} Command;
 
 void doprocessing(int sockfd); 
 void handler(int fd);
-
+char *getExec(const char *path, const char *exec);
+int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], int writefdlist[]);
 int sockfd;
 
 int main(int argc, const char *argv[])
@@ -69,8 +85,11 @@ int main(int argc, const char *argv[])
 
         if (pid == 0) {
             close(sockfd);
+            dup2(newsockfd, 0);
+            dup2(newsockfd, 1);
+            dup2(newsockfd, 2);
             doprocessing(newsockfd);
-            printf("Done\n");
+            close(newsockfd);
             exit(0);
         } else {
             close(newsockfd);
@@ -78,28 +97,12 @@ int main(int argc, const char *argv[])
     }
     
     close(sockfd);
-
     return 0;
 }
 
-typedef enum { 
-    E_proc = 0, 
-    E_argv = 1, 
-    E_stdout = 2, 
-    E_stderr = 3,
-    E_outfile = 4
-} CommandType;
-
-typedef struct Command {
-    CommandType commandType;
-    char *path;
-    char *command;
-    struct Command *next;
-} Command;
-
-const char *unknown = "Unknown command: [%s].\n";
 char *defaultPath[] = {"bin", "."};
 
+/* get executable file from env */
 char *getExec(const char *path, const char *exec) {
     DIR *dirp;
     struct dirent *direntp;
@@ -119,6 +122,7 @@ char *getExec(const char *path, const char *exec) {
     return NULL;
 }
 
+/* parse input command line */
 Command *parseCommands(char *commands) {
 
     int num = 0;
@@ -134,16 +138,16 @@ Command *parseCommands(char *commands) {
         }
 
         if (pre == NULL)
-            type = E_proc;
+            type = e_proc;
         else
-            type = E_argv;
+            type = e_argv;
 
         if (*commands == '|' && *(commands + 1) == ' ') {
-            type = E_proc;    
+            type = e_proc;    
             pos++;
             commands++;
         } else if (*commands == '>' && *(commands + 1) == ' ') {
-            type = E_outfile;
+            type = e_outfile;
             pos++;
             commands++;
         }
@@ -154,18 +158,18 @@ Command *parseCommands(char *commands) {
         }
 
         if (*commands == '|') {
-            type = E_stdout;
+            type = e_stdout;
             pos++;
             commands++;
         }
 
         if (*commands == '!') {
-            type = E_stderr;
+            type = e_stderr;
             pos++;
             commands++;
         }
 
-        // split commands
+        /* split commands */
         int count = 0;
         while (commands[count] != ' ' && commands[count] != '\0') {
             count++;
@@ -180,8 +184,8 @@ Command *parseCommands(char *commands) {
         Command *current = (Command*)malloc(sizeof(Command));
 
         current->path = NULL;
-        // get executable file by env
-        if (type == E_proc) {
+        /* get executable file by env */
+        if (type == e_proc) {
             for (int i = 0; i < sizeof(defaultPath) / sizeof(char*); i++) {
                 if ((current->path = getExec(defaultPath[i], command)) != NULL) {
                     break;
@@ -191,15 +195,10 @@ Command *parseCommands(char *commands) {
         current->command = command;
         current->commandType = type;
         current->next = NULL;
-        /* printf("================\n"); */
-        /* printf("command = %s\n", command); */
-        /* printf("commandType = %d\n", type); */
-        /* printf("commandPath = %s\n", current->path); */
-        /* printf("================\n"); */
-        // Example:
-        // current->path = bin/ls
-        // current->command = ls
-        // current->commandType = E_proc
+        /* Example: */
+        /* current->path = bin/ls */
+        /* current->command = ls */
+        /* current->commandType = e_proc */
         if (pre == NULL) { 
             head = current;
             pre = current;
@@ -218,34 +217,30 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
 
     int count = 0;
     // get arguments
-    while (args->next != NULL && args->next->commandType == E_argv) {
+    while (args->next != NULL && args->next->commandType == e_argv) {
         args = args->next;
         count++;
     }
-
     char *arguments[count + 1];
     bzero(arguments, count + 1);
     int n;
-    char buf[277]; // 256 + 20 + 1 unknown
     switch (command->commandType) {
-        case E_proc:
+        case e_proc:
             if (command->path == NULL) {
-                // exit command
+                /* exit command */
                 if (strcmp(command->command, "exit") == 0) {
-                    printf("exit");
-                    close(sockfd);
-                    exit(0);
+                    return 1;
+                } else if (strcmp(command->command, "printenv")) {
+                                       
+                } else if (strcmp(command->command, "setenv")) {
+                    
                 }
-                // unknown command
-                bzero(buf, 277);
-                sprintf(buf, unknown, command->command);
-                n = write(sockfd, buf, strlen(buf));
-                if (n < 0) {
-                    perror("ERROR writing unknown command to socket");       
-                }        
+                /* unknown command */
+                fprintf(stderr, "Unknown Command: [%s].\n", command->command);
+                fflush(stderr);
                 return -1;
             }
-            // get arguments
+            /* get arguments */
             arguments[0] = command->command;
             for (unsigned i = 1; i < count + 1; i++) {
                 arguments[i] = temp->next->command;
@@ -257,25 +252,25 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
             pid_t pid;
             int status_pid;
 
-            // command tail
+            /* command tail */
             if (args->next == NULL) {
-
-                // close writefd
+                /* close writefd */
                 if (writefdlist[counter] != 0) {
                     close(writefdlist[counter]);
                 }
 
                 pid = fork();
-                printf("readfd = %d\n", readfd);
+                
                 if (pid < 0) {
                     perror("ERROR on fork");
                     exit(1);
                 }
 
+                  
                 if (pid == 0) { 
-                    dup2(sockfd, 1); // replace stdout with sockfd
-                    dup2(sockfd, 2); // replace stdout with sockfd
-                    dup2(readfd, 0); // replace stdin with readfd
+                    dup2(readfd, STDIN); /* replace stdin with readfd */
+                    dup2(sockfd, STDOUT); /* replace stdout with sockfd */
+                    dup2(sockfd, STDERR); /* replace stderr with sockfd */
 
                     execv(command->path, arguments);
                     exit(0);
@@ -283,10 +278,10 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                     waitpid((pid_t)pid, &status_pid, 0);
                     return 0;
                 }
-            // redirect data to file
-            } else if (args->next->commandType == E_outfile) { 
+            /* redirect data to file */
+            } else if (args->next->commandType == e_outfile) { 
 
-                // close writefd
+                /* close writefd */
                 if (writefdlist[counter] != 0) {
                     close(writefdlist[counter]);
                 }
@@ -300,10 +295,10 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
 
                 if (pid == 0) {
                     FILE *file;
-                    file = fopen(args->next->command, "w");
-                    dup2(fileno(file), 1); // replace stdout with fileno(file)
-                    dup2(sockfd, 2); // replace stderr with sockfd
-                    dup2(readfd, 0); // replace stdin with readfd
+                    file = fopen(args->next->command, "w");                    
+                    dup2(readfd, STDIN); /* replace stdin with readfd */
+                    dup2(fileno(file), STDOUT); /* replace stdout with fileno(file) */
+                    dup2(sockfd, STDERR); /* replace stderr with sockfd */
 
                     execv(command->path, arguments);
                     exit(0);
@@ -311,30 +306,30 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                     waitpid((pid_t)pid, &status_pid, 0);
                     return 0;
                 }
-            // 1 numbered-pipe
-            } else if ((args->next->commandType == E_stdout ||
-                    args->next->commandType == E_stderr) && args->next->next == NULL) {
-                int std = args->next->commandType == E_stdout ? 1 : 2; // stdout or stderr
+            /* 1 numbered-pipe */
+            } else if ((args->next->commandType == e_stdout ||
+                    args->next->commandType == e_stderr) && args->next->next == NULL) {
+                int std = args->next->commandType == e_stdout ? STDOUT : STDERR; /* stdout or stderr */
                 
                 int number = atoi(args->next->command);
-                printf("writefdlist = %d\n", writefdlist[(counter + number) % 1000]); 
-                printf("(counter + number) % 1000 = %d\n", (counter + number) % 1000);
-                printf("counter = %d\n", counter);
-                printf("number = %d\n", number);
+                /* printf("writefdlist = %d\n", writefdlist[(counter + number) % 1000]);  */
+                /* printf("(counter + number) % 1000 = %d\n", (counter + number) % 1000); */
+                /* printf("counter = %d\n", counter); */
+                /* printf("number = %d\n", number); */
                 int writefd;
 
-                // close writefd
+                /* close writefd */
                 if (writefdlist[counter] != 0) {
                     close(writefdlist[counter]);
                 }
 
-                // if pipe is not already exist
+                /* if pipe is not already exist */
                 if ((writefd = writefdlist[(counter + number) % 1000]) == 0) {
                     if (pipe(pfd) < 0) {
                         perror("ERROR creating a pipe");
                         exit(1);
                     }   
-                    printf("pfd[0] = %d pfd[1] = %d\n", pfd[0], pfd[1]);
+                    /* printf("pfd[0] = %d pfd[1] = %d\n", pfd[0], pfd[1]); */
                     
                     pid = fork();
 
@@ -344,26 +339,25 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                     }
 
                     if (pid == 0) {
-                        dup2(pfd[1], std);// replace stdout or stderr with pfd[1];
-                        dup2(readfd, 0);// replace stdin with readfd;
+                        dup2(pfd[1], std); /* replace stdout or stderr with pfd[1] */
+                        dup2(readfd, STDIN); /* replace stdin with readfd */
                         close(pfd[0]);
 
                         execv(command->path, arguments);
                         exit(0);
                     } else {
-                        /* close(pfd[1]); */
                         waitpid((pid_t)pid, &status_pid, 0);
                         writefdlist[(counter + number) % 1000] = pfd[1];
                         readfdlist[(counter + number) % 1000] = pfd[0];
                       
                         return 0;    
                     }
-
+                /* if pipe is exist */
                 } else {
                     pid = fork();
                     if (pid == 0) {
-                        dup2(writefd, std);// replace stdout or stderr with writefd
-                        dup2(readfd, 0);// replace stdin with readfd;
+                        dup2(writefd, std); /* replace stdout or stderr with writefd */
+                        dup2(readfd, STDIN); /* replace stdin with readfd */
                         
                         execv(command->path, arguments);
                         exit(0);
@@ -372,17 +366,16 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                         return 0;
                     }
                 }
-            // 2 numbered-pipe
-            } else if ((args->next->commandType == E_stdout || args->next->commandType == E_stderr) &&
-                    (args->next->next->commandType == E_stdout || args->next->next->commandType == E_stderr)) {
-                
-                // close writefd
+            /* 2 numbered-pipe */
+            } else if ((args->next->commandType == e_stdout || args->next->commandType == e_stderr) &&
+                    (args->next->next->commandType == e_stdout || args->next->next->commandType == e_stderr)) {
+                /* close writefd */
                 if (writefdlist[counter] != 0) {
                     close(writefdlist[counter]);
                 }
 
                 int num_stdout, num_stderr;
-                if (args->next->commandType == E_stdout) {
+                if (args->next->commandType == e_stdout) {
                     num_stdout = atoi(args->next->command);
                     num_stderr = atoi(args->next->next->command);
                 } else {
@@ -392,9 +385,9 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                 int writefd_stdout = writefdlist[(counter + num_stdout) % 1000];
                 int writefd_stderr = writefdlist[(counter + num_stderr) % 1000];
 
-                // numbered-pipe stdout and stderr do not yet be created
+                /* numbered-pipe stdout and stderr is not yet created */
                 if (writefd_stdout == 0 && writefd_stderr == 0) {
-                    // the number of stdout pipe and stderr pipe is not equal
+                    /* the number of stdout pipe and stderr pipe is not equal */
                     if (num_stdout != num_stderr) {
                         int pfd_stdout[2], pfd_stderr[2];
                         if (pipe(pfd_stdout) < 0) {
@@ -409,13 +402,13 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                         pid = fork();
 
                         if (pid == 0) {
-                            // stdout
-                            dup2(pfd_stdout[1], 1);
-                            dup2(readfd, 0);
+                            /* stdin */
+                            dup2(readfd, STDIN);
+                            /* stdout */
+                            dup2(pfd_stdout[1], STDOUT);
                             close(pfd_stdout[0]);
-                            // stderr
-                            dup2(pfd_stderr[1], 2);
-                            dup2(readfd, 0);
+                            /* stderr */
+                            dup2(pfd_stderr[1], STDERR);
                             close(pfd_stderr[0]);
 
                             execv(command->path, arguments);
@@ -430,7 +423,7 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                             
                             return 0;
                         }
-                    // the number of stdout pipe and stderr pipe is equal
+                    /* the number of stdout pipe and stderr pipe is equal */
                     } else {
                         if (pipe(pfd) < 0) {
                             perror("ERROR creating a pipe");
@@ -440,11 +433,12 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                         pid = fork();
 
                         if (pid == 0) {
-                            // stdout
-                            dup2(pfd[1], 1);
-                            // stdin
-                            dup2(pfd[1], 2);
-                            dup2(readfd, 0);
+                            /* stdin */
+                            dup2(readfd, STDIN);
+                            /* stdout */
+                            dup2(pfd[1], STDOUT);
+                            /* stdin */
+                            dup2(pfd[1], STDERR);
                             close(pfd[0]);
 
                             execv(command->path, arguments);
@@ -454,25 +448,59 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                                 
                             writefdlist[(counter + num_stdout) % 1000] = pfd[1];
                             readfdlist[(counter + num_stdout) % 1000] = pfd[0];
-                            printf("pfd  = %d %d\n", pfd[1], pfd[0]);
                             return 0;
                         }
                     }
-                }
+                /* numbered-pipe stdout is created, but stderr not yet */
+                } else if (writefd_stdout != 0 && writefd_stderr == 0) {
+                    if (pipe(pfd) < 0) {
+                        perror("ERROR creating a pipe");
+                        exit(1);
+                    }
 
-                
+                    pid = fork();
+
+                    if (pid == 0) {
+                        /* stdin */
+                        dup2(readfd, STDIN); 
+                        /* stdout */
+                        dup2(writefd_stdout, STDOUT); 
+                        /* stderr */
+                        dup2(pfd[1], STDERR); 
+                        close(pfd[0]);
+
+                        execv(command->path, arguments);
+                        exit(0);
+                    } else {
+                        waitpid((pid_t)pid, &status_pid, 0);
+                        
+                        writefdlist[(counter + num_stderr) % 1000] = pfd[1];
+                        readfdlist[(counter + num_stderr) % 1000] = pfd[0];
+                        return 0;
+                    }
+                /* numbered-pipe stderr is created, but stdout not yet */
+                } else if (writefd_stdout == 0 && writefd_stderr != 0) {
+                    
+                }               
             } else {
+                /* NOTE:Create needed pipe first, then close writefd of current counter */
                 if (pipe(pfd) < 0) {
                     perror("ERROR creating a pipe");
                     exit(1);
                 }
                 
+                /* close writefd */
+                if (writefdlist[counter] != 0) {
+                    close(writefdlist[counter]);
+                }
+
                 pid = fork();
                 
+                   
                 if (pid == 0) {
-                    dup2(pfd[1], 1); // replace stdout with pfd[1]
-                    dup2(sockfd, 2); // replace stderr with sockfd
-                    dup2(readfd, 0); // replace stdin with readfd
+                    dup2(readfd, STDIN); /* replace stdin with readfd  */
+                    dup2(pfd[1], STDOUT); /* replace stdout with pfd[1] */
+                    dup2(sockfd, STDERR); /* replace stderr with sockfd */
                     close(pfd[0]);
 
                     execv(command->path, arguments);
@@ -487,26 +515,41 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                 }
             }
             break;
-        case E_argv:
-
+        case e_argv:
             break;
 
-        case E_stdout:
-            /* printf("DEBUG %s\n", command->command);           */
-            /* *index = atoi(command->command); */
-            /* *status = 0; */
-            /* return readfd; */
+        case e_stdout:
             break;
 
-        case E_stderr:
-
+        case e_stderr:
             break;   
 
-        case E_outfile:
-            
+        case e_outfile:
             break;
     }
 }
+
+int readline(int fd,char *ptr,int maxlen) {
+	int n,rc;
+	char c;
+	*ptr = 0;
+	for(n=1;n<maxlen;n++)
+	{
+		if((rc=read(fd,&c,1)) == 1)
+		{
+			*ptr++ = c;	
+			if(c=='\n')  break;
+		}
+		else if(rc==0)
+		{
+			if(n==1)     return(0);
+			else         break;
+		}
+		else
+			return(-1);
+	}
+	return(n);
+}      
 
 void doprocessing(int sockfd) {
     int n;
@@ -517,84 +560,74 @@ void doprocessing(int sockfd) {
     const char *welcome = 
         "****************************************\n"
         "** Welcome to the information server. **\n"
-        "****************************************\n"
-        "% ";
-    const char *prompt = "% ";
+        "****************************************\n";
 
-    n = write(sockfd, welcome, strlen(welcome) + 1);
-    if (n < 0) {
-        perror("ERROR writing welcome information to socket");
-        exit(1);
-    }
+    const char prompt[] = {'%', ' ', 13, '\0'};
+    
+    printf(welcome);
+    fflush(stdout);
     int readfdlist[1000] = {0};
     int writefdlist[1000] = {0};
     int counter = 0;
 
     while (1) {
-        n = read(sockfd, buffer, bufferSize - 1);
-        if (n < 0) {
-            perror("ERROR reading from socket");
-            exit(1);
-        }
 
-        // replace enter key and next line character
-        buffer[n] = 0;
-        buffer[n - 1] = 0;
+        printf(prompt);
+        fflush(stdout);
+
+        n = readline(sockfd, buffer, sizeof(buffer) - 1);
+        /* remove 13 enter key and 10 next key */
         buffer[n - 2] = '\0';
-
-#ifdef DEBUG
-        printf("Here is the message: %s\n", buffer);
-        n = write(sockfd, "I got your message\n", 19);
-#endif
 
         char *commands = buffer;
         Command *head = parseCommands(commands);
 
-        Command *debug = head;
         Command *go = head;
         int retfd, status;
         int readfd = readfdlist[counter % 1000];
-        printf("counter = %d\n", counter);
         while (go != NULL) {
-            printf("commandPath = %s\n", go->path);
-            printf("command = %s\n", go->command);
-            printf("type = %d\n", go->commandType);
-            fflush(stdout);
             
             status = run(sockfd, readfd, go, counter, readfdlist, writefdlist);
-            // Unknown command
+            
+            /* Unknown command */
             if (status == -1) {
                 break;
             }
 
             readfd = readfdlist[counter % 1000];
-            while (go->next != NULL && (go->next->commandType == E_argv || 
-                        go->next->commandType == E_stdout ||
-                        go->next->commandType == E_stderr)) {
+            while (go->next != NULL && (go->next->commandType == e_argv || 
+                        go->next->commandType == e_stdout ||
+                        go->next->commandType == e_stderr ||
+                        go->next->commandType == e_outfile)) {
                 go = go->next;
             }
             go = go->next;
         }
-        // free linked list
+
+        /* normal situation */
+        if (status == 0) {
+            /* reset writefd and readfd; */
+            writefdlist[counter % 1000] = 0;
+            readfdlist[counter % 1000] = 0;
+            counter++;   
+        /* unknown command */
+        } else if (status == -1) {
+            /* reset writefd and readfd; */
+            writefdlist[counter % 1000] = 0;
+            readfdlist[counter % 1000] = 0;
+        /* exit */
+        } else if (status == 1) {
+            return;
+        }
+
+        /* free linked list */
         Command *tmp;
         while (head != NULL) {
             tmp = head;
             head = head->next;
             free(tmp);
         }
-        printf("status = %d\n", status);
-        if (status == 0) {
-            // reset writefd and readfd;
-            writefdlist[counter % 1000] = 0;
-            readfdlist[counter % 1000] = 0;
-            counter++;    
-        }
-
         bzero(buffer, bufferSize);
-        n = write(sockfd, prompt, strlen(prompt));
-        if (n < 0) {
-            perror("ERROR writing prompt to socket");       
-        }
     }
     if (n < 0) {
         perror("ERROR writing to socket");
