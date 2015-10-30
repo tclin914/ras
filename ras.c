@@ -480,7 +480,51 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                     }
                 /* numbered-pipe stderr is created, but stdout not yet */
                 } else if (writefd_stdout == 0 && writefd_stderr != 0) {
+                    if (pipe(pfd) < 0) {
+                        perror("ERROR creating a pipe");
+                        exit(1);
+                    }          
+
+                    pid = fork();
+
+                    if (pid == 0) {
+                        /* stdin */
+                        dup2(readfd, STDIN);
+                        /* stdout */
+                        dup2(pfd[1], STDOUT);
+                        /* stderr */
+                        dup2(writefd_stderr, STDERR);
+                        close(pfd[0]);
+
+                        execv(command->path, arguments);
+                        exit(0);
+                    } else {
+                        waitpid((pid_t)pid, &status_pid, 0);
+
+                        writefdlist[(counter + num_stdout) % 1000] = pfd[1];
+                        readfdlist[(counter + num_stdout) % 1000] = pfd[0];
+                        return 0;
+                    }
+                /* numbered-pipe stdout and stderr are created */
+                } else {
                     
+                    pid = fork();
+
+                    if (pid == 0) {
+                        /* stdin */
+                        dup2(readfd, STDIN);
+                        /* stdout */
+                        dup2(writefd_stdout, STDOUT);
+                        /* stderr */
+                        dup2(writefd_stderr, STDERR);
+
+                        execv(command->path, arguments);
+                        exit(0);
+                    } else {
+                        waitpid((pid_t)pid, &status_pid, 0);
+                        
+                        return 0;
+                    }
                 }               
             } else {
                 /* NOTE:Create needed pipe first, then close writefd of current counter */
@@ -604,6 +648,14 @@ void doprocessing(int sockfd) {
             go = go->next;
         }
 
+        /* free linked list */
+        Command *tmp;
+        while (head != NULL) {
+            tmp = head;
+            head = head->next;
+            free(tmp);
+        }
+
         /* normal situation */
         if (status == 0) {
             /* reset writefd and readfd; */
@@ -620,13 +672,6 @@ void doprocessing(int sockfd) {
             return;
         }
 
-        /* free linked list */
-        Command *tmp;
-        while (head != NULL) {
-            tmp = head;
-            head = head->next;
-            free(tmp);
-        }
         bzero(buffer, bufferSize);
     }
     if (n < 0) {
