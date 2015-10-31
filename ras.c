@@ -8,6 +8,8 @@
 #include <sys/wait.h>
 #include <dirent.h>
 #include <string.h>
+#include <sys/stat.h> /* open() */
+#include <fcntl.h> /* file control options */
 
 #define STDIN 0
 #define STDOUT 1
@@ -23,7 +25,6 @@ typedef enum {
 
 typedef struct Command {
     CommandType commandType;
-    char *path;
     char *command;
     struct Command *next;
 } Command;
@@ -101,7 +102,6 @@ int main(int argc, const char *argv[])
 }
 
 char *defaultPath[] = {"bin", "."};
-
 /* get executable file from env */
 char *getExec(const char *path, const char *exec) {
     DIR *dirp;
@@ -128,84 +128,69 @@ Command *parseCommands(char *commands) {
     int num = 0;
     Command *head, *pre = NULL;
     int len = strlen(commands);
-    for (unsigned pos = 0; pos < len;) {
 
-        CommandType type;
+    int check = 0;
+    CommandType type;
+    char *pch = NULL;
+    pch = strtok(commands, " \n\r\t");
+    for (unsigned i = 0; pch != NULL; i++) {
+        if (pre == NULL) {
+            Command *current = (Command*)malloc(sizeof(Command));
+            current->command = pch;
+            current->commandType = e_proc;
+            current->next = NULL;
 
-        while (*commands == ' ') {
-            pos++;
-            commands++;
-        }
-
-        if (pre == NULL)
-            type = e_proc;
-        else
-            type = e_argv;
-
-        if (*commands == '|' && *(commands + 1) == ' ') {
-            type = e_proc;    
-            pos++;
-            commands++;
-        } else if (*commands == '>' && *(commands + 1) == ' ') {
-            type = e_outfile;
-            pos++;
-            commands++;
-        }
-
-        while (*commands == ' ') {
-            pos++;
-            commands++;
-        }
-
-        if (*commands == '|') {
-            type = e_stdout;
-            pos++;
-            commands++;
-        }
-
-        if (*commands == '!') {
-            type = e_stderr;
-            pos++;
-            commands++;
-        }
-
-        /* split commands */
-        int count = 0;
-        while (commands[count] != ' ' && commands[count] != '\0') {
-            count++;
-            pos++;
-        }
-
-        char *command = (char*)malloc(sizeof(char) * (count + 1));
-        memcpy(command, commands, count);
-        command[count] = '\0';
-        commands += count;
-
-        Command *current = (Command*)malloc(sizeof(Command));
-
-        current->path = NULL;
-        /* get executable file by env */
-        if (type == e_proc) {
-            for (int i = 0; i < sizeof(defaultPath) / sizeof(char*); i++) {
-                if ((current->path = getExec(defaultPath[i], command)) != NULL) {
-                    break;
-                }
-            }
-        }
-        current->command = command;
-        current->commandType = type;
-        current->next = NULL;
-        /* Example: */
-        /* current->path = bin/ls */
-        /* current->command = ls */
-        /* current->commandType = e_proc */
-        if (pre == NULL) { 
+            pre = current;
             head = current;
+        } else if (strcmp(pch, "|") == 0) {
+            pch = strtok(NULL, " \n\r\t");
+            Command *current = (Command*)malloc(sizeof(Command));
+            current->command = pch;
+            current->commandType = e_proc;
+            current->next = NULL;
+
+            pre->next = current;
+            pre = current;
+        } else if (strcmp(pch, ">") == 0) {
+            /* file redirection */
+            pch = strtok(NULL, " \n\r\t");
+            Command *current = (Command*)malloc(sizeof(Command));
+            current->command = pch;
+            current->commandType = e_outfile;
+            current->next = NULL;
+
+            pre->next = current;
+            pre = current;
+        } else if (*pch - '|' == 0) {
+            /* numbered-pipe stdout */
+            Command *current = (Command*)malloc(sizeof(Command));
+            current->command = pch + 1;
+            current->commandType = e_stdout;
+            current->next = NULL;
+
+            pre->next = current;
+            pre = current;
+        } else if (*pch - '!' == 0) {
+            /* numbered-pipe stderr */
+            Command *current = (Command*)malloc(sizeof(Command));
+            current->command = pch + 1;
+            current->commandType = e_stderr;
+            current->next = NULL;
+        
+            pre->next = current;
             pre = current;
         } else {
+            /* arguments */
+            Command *current = (Command*)malloc(sizeof(Command));
+            current->command = pch;
+            current->commandType = e_argv;
+            current->next = NULL;
+
             pre->next = current;
             pre = current;
         }
+
+        pch = strtok(NULL, " \n\r\t");
     }
     return head;
 }
@@ -224,21 +209,26 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
     char *arguments[count + 1];
     bzero(arguments, count + 1);
     int n;
+    char *envar = NULL;
     switch (command->commandType) {
         case e_proc:
-            if (command->path == NULL) {
-                /* exit command */
-                if (strcmp(command->command, "exit") == 0) {
-                    return 1;
-                } else if (strcmp(command->command, "printenv")) {
-                                       
-                } else if (strcmp(command->command, "setenv")) {
-                    
-                }
-                /* unknown command */
-                fprintf(stderr, "Unknown Command: [%s].\n", command->command);
-                fflush(stderr);
+            /* exit command */
+            printf("command->command = %s\n", command->command);
+            fflush(stdout);
+            if (strcmp(command->command, "exit") == 0) {
                 return -1;
+            /* printenv */
+            } else if (strcmp(command->command, "printenv") == 0) {
+                if ((envar = getenv(command->next->command)) != NULL) { 
+                    printf("%s=%s\n", command->next->command, envar);
+                    fflush(stdout);
+                    return 0;
+                }
+            /* setenv */
+            } else if (strcmp(command->command, "setenv") == 0) {
+                // TODO:less arguments event
+                setenv(command->next->command, command->next->next->command, 1);
+                return 0;
             }
             /* get arguments */
             arguments[0] = command->command;
@@ -272,10 +262,17 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                     dup2(sockfd, STDOUT); /* replace stdout with sockfd */
                     dup2(sockfd, STDERR); /* replace stderr with sockfd */
 
-                    execv(command->path, arguments);
-                    exit(0);
+                    /* execv(command->path, arguments); */
+                    execvp(command->command, arguments);
+                    fprintf(stderr, "Unknown Command: [%s].\n", command->command);
+                    exit(1);
                 } else {
                     waitpid((pid_t)pid, &status_pid, 0);
+                    
+                    if (WIFEXITED(status_pid)) {
+                        return WEXITSTATUS(status_pid);
+                    }
+
                     return 0;
                 }
             /* redirect data to file */
@@ -294,16 +291,21 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                 }
 
                 if (pid == 0) {
-                    FILE *file;
-                    file = fopen(args->next->command, "w");                    
+                    int filefd = open(args->next->command, O_CREAT | O_RDWR, S_IREAD | S_IWRITE);
                     dup2(readfd, STDIN); /* replace stdin with readfd */
-                    dup2(fileno(file), STDOUT); /* replace stdout with fileno(file) */
+                    dup2(filefd, STDOUT); /* replace stdout with fileno(file) */
                     dup2(sockfd, STDERR); /* replace stderr with sockfd */
-
-                    execv(command->path, arguments);
-                    exit(0);
+                    close(filefd);
+                    /* execv(command->path, arguments); */
+                    execvp(command->command, arguments);
+                    fprintf(stderr, "Unknown Command: [%s].\n", command->command);
+                    exit(1);
                 } else {
                     waitpid((pid_t)pid, &status_pid, 0);
+                    
+                    if (WIFEXITED(status_pid)) {
+                            return WEXITSTATUS(status_pid);
+                    }
                     return 0;
                 }
             /* 1 numbered-pipe */
@@ -322,14 +324,14 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                 if (writefdlist[counter] != 0) {
                     close(writefdlist[counter]);
                 }
-
+                
                 /* if pipe is not already exist */
                 if ((writefd = writefdlist[(counter + number) % 1000]) == 0) {
                     if (pipe(pfd) < 0) {
                         perror("ERROR creating a pipe");
                         exit(1);
                     }   
-                    /* printf("pfd[0] = %d pfd[1] = %d\n", pfd[0], pfd[1]); */
+                    printf("pfd[0] = %d pfd[1] = %d\n", pfd[0], pfd[1]);
                     
                     pid = fork();
 
@@ -343,13 +345,21 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                         dup2(readfd, STDIN); /* replace stdin with readfd */
                         close(pfd[0]);
 
-                        execv(command->path, arguments);
-                        exit(0);
+                        /* execv(command->path, arguments); */
+                        execvp(command->command, arguments);
+                        fprintf(stderr, "Unknown Command: [%s].\n", command->command);
+                        exit(1);
                     } else {
                         waitpid((pid_t)pid, &status_pid, 0);
-                        writefdlist[(counter + number) % 1000] = pfd[1];
-                        readfdlist[(counter + number) % 1000] = pfd[0];
                       
+                        if (WIFEXITED(status_pid)) {
+                            if (WEXITSTATUS(status_pid) == 0) {
+                                writefdlist[(counter + number) % 1000] = pfd[1];
+                                readfdlist[(counter + number) % 1000] = pfd[0];
+                                return 0;
+                            } 
+                            return 1;
+                        }
                         return 0;    
                     }
                 /* if pipe is exist */
@@ -359,10 +369,16 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                         dup2(writefd, std); /* replace stdout or stderr with writefd */
                         dup2(readfd, STDIN); /* replace stdin with readfd */
                         
-                        execv(command->path, arguments);
-                        exit(0);
+                        /* execv(command->path, arguments); */
+                        execvp(command->command, arguments);
+                        fprintf(stderr, "Unknown Command: [%s].\n", command->command);
+                        exit(1);
                     } else {
                         waitpid((pid_t)pid, &status_pid, 0);
+                        
+                        if (WIFEXITED(status_pid)) {
+                            return WEXITSTATUS(status_pid);
+                        }
                         return 0;
                     }
                 }
@@ -411,16 +427,23 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                             dup2(pfd_stderr[1], STDERR);
                             close(pfd_stderr[0]);
 
-                            execv(command->path, arguments);
-                            exit(0);
+                            /* execv(command->path, arguments); */
+                            execvp(command->command, arguments);
+                            fprintf(stderr, "Unknown Command: [%s].\n", command->command);
+                            exit(1);
                         } else {
                             waitpid((pid_t)pid, &status_pid, 0);
                             
-                            writefdlist[(counter + num_stdout) % 1000] = pfd_stdout[1];
-                            writefdlist[(counter + num_stderr) % 1000] = pfd_stderr[1];
-                            readfdlist[(counter + num_stdout) % 1000] = pfd_stdout[0];
-                            readfdlist[(counter + num_stderr) % 1000] = pfd_stderr[0];
-                            
+                            if (WIFEXITED(status_pid)) {
+                                if(WEXITSTATUS(status_pid) == 0) {
+                                    writefdlist[(counter + num_stdout) % 1000] = pfd_stdout[1];
+                                    writefdlist[(counter + num_stderr) % 1000] = pfd_stderr[1];
+                                    readfdlist[(counter + num_stdout) % 1000] = pfd_stdout[0];
+                                    readfdlist[(counter + num_stderr) % 1000] = pfd_stderr[0];
+                                    return 0;
+                                } 
+                                return 1;
+                            }
                             return 0;
                         }
                     /* the number of stdout pipe and stderr pipe is equal */
@@ -441,13 +464,21 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                             dup2(pfd[1], STDERR);
                             close(pfd[0]);
 
-                            execv(command->path, arguments);
-                            exit(0);
+                            /* execv(command->path, arguments); */
+                            execvp(command->command, arguments);
+                            fprintf(stderr, "Unknown Command: [%s].\n", command->command);
+                            exit(1);
                         } else {
                             waitpid((pid_t)pid, &status_pid, 0);
                                 
-                            writefdlist[(counter + num_stdout) % 1000] = pfd[1];
-                            readfdlist[(counter + num_stdout) % 1000] = pfd[0];
+                            if (WIFEXITED(status_pid)) {
+                                if(WEXITSTATUS(status_pid) == 0) {
+                                    writefdlist[(counter + num_stdout) % 1000] = pfd[1];
+                                    readfdlist[(counter + num_stdout) % 1000] = pfd[0];
+                                    return 0;
+                                }
+                                return 1;
+                            }
                             return 0;
                         }
                     }
@@ -469,13 +500,21 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                         dup2(pfd[1], STDERR); 
                         close(pfd[0]);
 
-                        execv(command->path, arguments);
-                        exit(0);
+                        /* execv(command->path, arguments); */
+                        execvp(command->command, arguments);
+                        fprintf(stderr, "Unknown Command: [%s].\n", command->command);
+                        exit(1);
                     } else {
                         waitpid((pid_t)pid, &status_pid, 0);
                         
-                        writefdlist[(counter + num_stderr) % 1000] = pfd[1];
-                        readfdlist[(counter + num_stderr) % 1000] = pfd[0];
+                        if (WIFEXITED(status_pid)) {
+                            if(WEXITSTATUS(status_pid) == 0) {
+                                writefdlist[(counter + num_stderr) % 1000] = pfd[1];
+                                readfdlist[(counter + num_stderr) % 1000] = pfd[0];
+                                return 0;
+                            }
+                            return 1;
+                        }
                         return 0;
                     }
                 /* numbered-pipe stderr is created, but stdout not yet */
@@ -496,13 +535,21 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                         dup2(writefd_stderr, STDERR);
                         close(pfd[0]);
 
-                        execv(command->path, arguments);
-                        exit(0);
+                        /* execv(command->path, arguments); */
+                        execvp(command->command, arguments);
+                        fprintf(stderr, "Unknown Command: [%s].\n", command->command);
+                        exit(1);
                     } else {
                         waitpid((pid_t)pid, &status_pid, 0);
 
-                        writefdlist[(counter + num_stdout) % 1000] = pfd[1];
-                        readfdlist[(counter + num_stdout) % 1000] = pfd[0];
+                        if (WIFEXITED(status_pid)) {
+                            if(WEXITSTATUS(status_pid) == 0) {
+                                writefdlist[(counter + num_stdout) % 1000] = pfd[1];
+                                readfdlist[(counter + num_stdout) % 1000] = pfd[0];
+                                return 0;
+                            }
+                            return 1;
+                        }
                         return 0;
                     }
                 /* numbered-pipe stdout and stderr are created */
@@ -518,11 +565,16 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                         /* stderr */
                         dup2(writefd_stderr, STDERR);
 
-                        execv(command->path, arguments);
-                        exit(0);
+                        /* execv(command->path, arguments); */
+                        execvp(command->command, arguments);
+                        fprintf(stderr, "Unknown Command: [%s].\n", command->command);
+                        exit(1);
                     } else {
                         waitpid((pid_t)pid, &status_pid, 0);
                         
+                        if (WIFEXITED(status_pid)) {
+                            return WEXITSTATUS(status_pid);
+                        }
                         return 0;
                     }
                 }               
@@ -547,14 +599,21 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                     dup2(sockfd, STDERR); /* replace stderr with sockfd */
                     close(pfd[0]);
 
-                    execv(command->path, arguments);
-                    exit(0);
+                    /* execv(command->path, arguments); */
+                    execvp(command->command, arguments);
+                    fprintf(stderr, "Unknown Command: [%s].\n", command->command);
+                    exit(1);
                 } else {
                     close(pfd[1]);
                     waitpid((pid_t)pid, &status_pid, 0);
                    
-                    readfdlist[counter] = pfd[0];
-                    
+                    if (WIFEXITED(status_pid)) {
+                        if(WEXITSTATUS(status_pid) == 0) {
+                            readfdlist[counter] = pfd[0];                    
+                            return 0;
+                        }
+                        return 1;
+                    }
                     return 0;
                 }
             }
@@ -607,7 +666,10 @@ void doprocessing(int sockfd) {
         "****************************************\n";
 
     const char prompt[] = {'%', ' ', 13, '\0'};
-    
+    char *defaultPath[] = {"bin", "."};
+
+    setenv("PATH", "bin:.", 1);
+
     printf(welcome);
     fflush(stdout);
     int readfdlist[1000] = {0};
@@ -615,29 +677,44 @@ void doprocessing(int sockfd) {
     int counter = 0;
 
     while (1) {
-
         printf(prompt);
         fflush(stdout);
 
         n = readline(sockfd, buffer, sizeof(buffer) - 1);
+        if (n == 0) {
+            break;
+        } else if (n == 2) {
+            continue;
+        }
         /* remove 13 enter key and 10 next key */
         buffer[n - 2] = '\0';
 
         char *commands = buffer;
         Command *head = parseCommands(commands);
-
         Command *go = head;
+
+        /* while (go != NULL) { */
+            /* printf("command path = %s\n", go->path); */
+            /* printf("command = %s\n", go->command); */
+            /* printf("command type = %d\n", go->commandType); */
+            /* go = go->next; */
+        /* } */
+
         int retfd, status;
+        int move = 0;
         int readfd = readfdlist[counter % 1000];
+        /* printf("readfd %d\n", readfd); */
+        /* fflush(stdout); */
         while (go != NULL) {
             
             status = run(sockfd, readfd, go, counter, readfdlist, writefdlist);
-            
-            /* Unknown command */
-            if (status == -1) {
+            /* printf("status = %d\n", status); */
+            /* fflush(stdout); */
+            if (status == 0) {
+                move = 1;
+            } else if (status == 1) {
                 break;
             }
-
             readfd = readfdlist[counter % 1000];
             while (go->next != NULL && (go->next->commandType == e_argv || 
                         go->next->commandType == e_stdout ||
@@ -647,7 +724,7 @@ void doprocessing(int sockfd) {
             }
             go = go->next;
         }
-
+        
         /* free linked list */
         Command *tmp;
         while (head != NULL) {
@@ -656,27 +733,22 @@ void doprocessing(int sockfd) {
             free(tmp);
         }
 
-        /* normal situation */
-        if (status == 0) {
-            /* reset writefd and readfd; */
-            writefdlist[counter % 1000] = 0;
-            readfdlist[counter % 1000] = 0;
-            counter++;   
-        /* unknown command */
-        } else if (status == -1) {
-            /* reset writefd and readfd; */
-            writefdlist[counter % 1000] = 0;
-            readfdlist[counter % 1000] = 0;
-        /* exit */
-        } else if (status == 1) {
+        if (status == -1) {
             return;
         }
-
+    
+        /* normal situation */
+        if (move == 1) {
+            /* reset writefd and readfd; */
+            writefdlist[counter % 1000] = 0;
+            readfdlist[counter % 1000] = 0;
+            /* printf("counter++\n"); */
+            /* fflush(stdout); */
+            counter++;
+            move = 0;
+        }
         bzero(buffer, bufferSize);
     }
-    if (n < 0) {
-        perror("ERROR writing to socket");
-        exit(1);
-    }
+    return;
 }
 
