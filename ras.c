@@ -31,7 +31,6 @@ typedef struct Command {
 
 void doprocessing(int sockfd); 
 void handler(int fd);
-char *getExec(const char *path, const char *exec);
 int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], int writefdlist[]);
 int sockfd;
 
@@ -99,27 +98,6 @@ int main(int argc, const char *argv[])
     
     close(sockfd);
     return 0;
-}
-
-char *defaultPath[] = {"bin", "."};
-/* get executable file from env */
-char *getExec(const char *path, const char *exec) {
-    DIR *dirp;
-    struct dirent *direntp;
-    if ((dirp = opendir(path)) == NULL) {
-        printf("ERROR opening directory fail");
-        return NULL;
-    }
-    while ((direntp = readdir(dirp)) != NULL ) {
-        if (strcmp(exec, direntp->d_name) == 0) {
-            char *result = (char*)malloc(sizeof(char) * (strlen(path) + strlen(direntp->d_name) + 2));
-            sprintf(result, "%s/%s", path, direntp->d_name);
-            closedir(dirp);
-            return result;
-        }   
-    }
-    closedir(dirp);
-    return NULL;
 }
 
 /* parse input command line */
@@ -213,8 +191,6 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
     switch (command->commandType) {
         case e_proc:
             /* exit command */
-            printf("command->command = %s\n", command->command);
-            fflush(stdout);
             if (strcmp(command->command, "exit") == 0) {
                 return -1;
             /* printenv */
