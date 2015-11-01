@@ -232,7 +232,6 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                     exit(1);
                 }
 
-                  
                 if (pid == 0) { 
                     dup2(readfd, STDIN); /* replace stdin with readfd */
                     dup2(sockfd, STDOUT); /* replace stdout with sockfd */
@@ -246,14 +245,15 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                     waitpid((pid_t)pid, &status_pid, 0);
                     
                     if (WIFEXITED(status_pid)) {
-                        return WEXITSTATUS(status_pid);
+                        if (WEXITSTATUS(status_pid) == 0) { 
+                            return 0;
+                        }
+                        return 1;
                     }
-
                     return 0;
                 }
             /* redirect data to file */
             } else if (args->next->commandType == e_outfile) { 
-
                 /* close writefd */
                 if (writefdlist[counter] != 0) {
                     close(writefdlist[counter]);
@@ -280,7 +280,7 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                     waitpid((pid_t)pid, &status_pid, 0);
                     
                     if (WIFEXITED(status_pid)) {
-                            return WEXITSTATUS(status_pid);
+                        return WEXITSTATUS(status_pid);
                     }
                     return 0;
                 }
@@ -290,10 +290,6 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                 int std = args->next->commandType == e_stdout ? STDOUT : STDERR; /* stdout or stderr */
                 
                 int number = atoi(args->next->command);
-                /* printf("writefdlist = %d\n", writefdlist[(counter + number) % 1000]);  */
-                /* printf("(counter + number) % 1000 = %d\n", (counter + number) % 1000); */
-                /* printf("counter = %d\n", counter); */
-                /* printf("number = %d\n", number); */
                 int writefd;
 
                 /* close writefd */
@@ -307,7 +303,6 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                         perror("ERROR creating a pipe");
                         exit(1);
                     }   
-                    printf("pfd[0] = %d pfd[1] = %d\n", pfd[0], pfd[1]);
                     
                     pid = fork();
 
@@ -453,9 +448,8 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                                     readfdlist[(counter + num_stdout) % 1000] = pfd[0];
                                     return 0;
                                 }
-                                return 1;
+                                return 0;
                             }
-                            return 0;
                         }
                     }
                 /* numbered-pipe stdout is created, but stderr not yet */
@@ -555,6 +549,12 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                     }
                 }               
             } else {
+                /* close writefd */
+                if (writefdlist[counter] != 0) {
+                    close(writefdlist[counter]);
+                    writefdlist[counter] = 0;
+                }
+
                 /* NOTE:Create needed pipe first, then close writefd of current counter */
                 if (pipe(pfd) < 0) {
                     perror("ERROR creating a pipe");
@@ -562,13 +562,13 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                 }
                 
                 /* close writefd */
-                if (writefdlist[counter] != 0) {
-                    close(writefdlist[counter]);
-                }
-
+                /* if (writefdlist[counter] != 0) { */
+                    /* printf("close = %d\n", writefdlist[counter]); */
+                    /* close(writefdlist[counter]); */
+                    /* writefdlist[counter] = 0; */
+                /* } */
                 pid = fork();
-                
-                   
+                    
                 if (pid == 0) {
                     dup2(readfd, STDIN); /* replace stdin with readfd  */
                     dup2(pfd[1], STDOUT); /* replace stdout with pfd[1] */
