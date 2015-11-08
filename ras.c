@@ -205,7 +205,11 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                 // TODO:less arguments event
                 setenv(command->next->command, command->next->next->command, 1);
                 return 0;
+            } else if(strcmp(command->command, "remove") == 0) {
+                setenv(command->next->command, "", 1);
+                return 0;
             }
+
             /* get arguments */
             arguments[0] = command->command;
             for (unsigned i = 1; i < count + 1; i++) {
@@ -295,15 +299,28 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                 /* close writefd */
                 if (writefdlist[counter] != 0) {
                     close(writefdlist[counter]);
+                    /* printf("close write = %d\n", writefdlist[counter]); */
                 }
                 
                 /* if pipe is not already exist */
-                if ((writefd = writefdlist[(counter + number) % 1000]) == 0) {
+                if ((writefd = writefdlist[(counter + number) % 2000]) == 0) {
                     if (pipe(pfd) < 0) {
                         perror("ERROR creating a pipe");
                         exit(1);
-                    }   
-                    
+                    }  
+
+
+                /* close writefd */
+                /* if (writefdlist[counter] != 0) { */
+                    /* close(writefdlist[counter]); */
+                    /* [> printf("close write = %d\n", writefdlist[counter]); <] */
+                /* } */
+
+                /* close writefd */
+                /* if (writefdlist[counter] != 0) { */
+                    /* close(writefdlist[counter]); */
+                /* } */
+                    /* printf("pfd[0] = %d pfd[1] = %d\n", pfd[0], pfd[1]);                   */
                     pid = fork();
 
                     if (pid < 0) {
@@ -321,12 +338,22 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                         fprintf(stderr, "Unknown Command: [%s].\n", command->command);
                         exit(1);
                     } else {
+
+                        /* if (readfd != 0) { */
+                            /* close(readfd); */
+                            /* printf("close = %d\n", readfd); */
+                        /* } */
                         waitpid((pid_t)pid, &status_pid, 0);
-                      
+                     
+                        if (readfd != 0) {
+                            close(readfd);
+                            /* printf("close = %d\n", readfd); */
+                        }
+
                         if (WIFEXITED(status_pid)) {
                             if (WEXITSTATUS(status_pid) == 0) {
-                                writefdlist[(counter + number) % 1000] = pfd[1];
-                                readfdlist[(counter + number) % 1000] = pfd[0];
+                                writefdlist[(counter + number) % 2000] = pfd[1];
+                                readfdlist[(counter + number) % 2000] = pfd[0];
                                 return 0;
                             } 
                             return 1;
@@ -346,7 +373,11 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                         exit(1);
                     } else {
                         waitpid((pid_t)pid, &status_pid, 0);
-                        
+                    
+                        /* if (readfd != 0) { */
+                            /* close(readfd); */
+                        /* } */
+
                         if (WIFEXITED(status_pid)) {
                             return WEXITSTATUS(status_pid);
                         }
@@ -581,7 +612,11 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                     exit(1);
                 } else {
                     close(pfd[1]);
+                 
                     waitpid((pid_t)pid, &status_pid, 0);
+                    if (readfd != 0) {
+                        close(readfd);   
+                    }
                    
                     if (WIFEXITED(status_pid)) {
                         if(WEXITSTATUS(status_pid) == 0) {
@@ -648,8 +683,8 @@ void doprocessing(int sockfd) {
 
     printf(welcome);
     fflush(stdout);
-    int readfdlist[1000] = {0};
-    int writefdlist[1000] = {0};
+    int readfdlist[2000] = {0};
+    int writefdlist[2000] = {0};
     int counter = 0;
 
     while (1) {
@@ -678,7 +713,7 @@ void doprocessing(int sockfd) {
 
         int retfd, status;
         int move = 0;
-        int readfd = readfdlist[counter % 1000];
+        int readfd = readfdlist[counter % 2000];
         /* printf("readfd %d\n", readfd); */
         /* fflush(stdout); */
         while (go != NULL) {
@@ -691,7 +726,7 @@ void doprocessing(int sockfd) {
             } else if (status == 1) {
                 break;
             }
-            readfd = readfdlist[counter % 1000];
+            readfd = readfdlist[counter % 2000];
             while (go->next != NULL && (go->next->commandType == e_argv || 
                         go->next->commandType == e_stdout ||
                         go->next->commandType == e_stderr ||
@@ -716,8 +751,8 @@ void doprocessing(int sockfd) {
         /* normal situation */
         if (move == 1) {
             /* reset writefd and readfd; */
-            writefdlist[counter % 1000] = 0;
-            readfdlist[counter % 1000] = 0;
+            writefdlist[counter % 2000] = 0;
+            readfdlist[counter % 2000] = 0;
             /* printf("counter++\n"); */
             /* fflush(stdout); */
             counter++;
