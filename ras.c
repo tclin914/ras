@@ -309,18 +309,6 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                         exit(1);
                     }  
 
-
-                /* close writefd */
-                /* if (writefdlist[counter] != 0) { */
-                    /* close(writefdlist[counter]); */
-                    /* [> printf("close write = %d\n", writefdlist[counter]); <] */
-                /* } */
-
-                /* close writefd */
-                /* if (writefdlist[counter] != 0) { */
-                    /* close(writefdlist[counter]); */
-                /* } */
-                    /* printf("pfd[0] = %d pfd[1] = %d\n", pfd[0], pfd[1]);                   */
                     pid = fork();
 
                     if (pid < 0) {
@@ -400,8 +388,8 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                     num_stdout = atoi(args->next->next->command);
                     num_stderr = atoi(args->next->command);
                 }
-                int writefd_stdout = writefdlist[(counter + num_stdout) % 1000];
-                int writefd_stderr = writefdlist[(counter + num_stderr) % 1000];
+                int writefd_stdout = writefdlist[(counter + num_stdout) % 2000];
+                int writefd_stderr = writefdlist[(counter + num_stderr) % 2000];
 
                 /* numbered-pipe stdout and stderr is not yet created */
                 if (writefd_stdout == 0 && writefd_stderr == 0) {
@@ -438,10 +426,10 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                             
                             if (WIFEXITED(status_pid)) {
                                 if(WEXITSTATUS(status_pid) == 0) {
-                                    writefdlist[(counter + num_stdout) % 1000] = pfd_stdout[1];
-                                    writefdlist[(counter + num_stderr) % 1000] = pfd_stderr[1];
-                                    readfdlist[(counter + num_stdout) % 1000] = pfd_stdout[0];
-                                    readfdlist[(counter + num_stderr) % 1000] = pfd_stderr[0];
+                                    writefdlist[(counter + num_stdout) % 2000] = pfd_stdout[1];
+                                    writefdlist[(counter + num_stderr) % 2000] = pfd_stderr[1];
+                                    readfdlist[(counter + num_stdout) % 2000] = pfd_stdout[0];
+                                    readfdlist[(counter + num_stderr) % 2000] = pfd_stderr[0];
                                     return 0;
                                 } 
                                 return 1;
@@ -475,8 +463,8 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                                 
                             if (WIFEXITED(status_pid)) {
                                 if(WEXITSTATUS(status_pid) == 0) {
-                                    writefdlist[(counter + num_stdout) % 1000] = pfd[1];
-                                    readfdlist[(counter + num_stdout) % 1000] = pfd[0];
+                                    writefdlist[(counter + num_stdout) % 2000] = pfd[1];
+                                    readfdlist[(counter + num_stdout) % 2000] = pfd[0];
                                     return 0;
                                 }
                                 return 0;
@@ -510,8 +498,8 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                         
                         if (WIFEXITED(status_pid)) {
                             if(WEXITSTATUS(status_pid) == 0) {
-                                writefdlist[(counter + num_stderr) % 1000] = pfd[1];
-                                readfdlist[(counter + num_stderr) % 1000] = pfd[0];
+                                writefdlist[(counter + num_stderr) % 2000] = pfd[1];
+                                readfdlist[(counter + num_stderr) % 2000] = pfd[0];
                                 return 0;
                             }
                             return 1;
@@ -545,8 +533,8 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
 
                         if (WIFEXITED(status_pid)) {
                             if(WEXITSTATUS(status_pid) == 0) {
-                                writefdlist[(counter + num_stdout) % 1000] = pfd[1];
-                                readfdlist[(counter + num_stdout) % 1000] = pfd[0];
+                                writefdlist[(counter + num_stdout) % 2000] = pfd[1];
+                                readfdlist[(counter + num_stdout) % 2000] = pfd[0];
                                 return 0;
                             }
                             return 1;
@@ -592,12 +580,6 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                     exit(1);
                 }
                 
-                /* close writefd */
-                /* if (writefdlist[counter] != 0) { */
-                    /* printf("close = %d\n", writefdlist[counter]); */
-                    /* close(writefdlist[counter]); */
-                    /* writefdlist[counter] = 0; */
-                /* } */
                 pid = fork();
                     
                 if (pid == 0) {
@@ -755,6 +737,7 @@ void doprocessing(int sockfd) {
             readfdlist[counter % 2000] = 0;
             /* printf("counter++\n"); */
             /* fflush(stdout); */
+            printf("counter = %d\n", counter);
             counter++;
             move = 0;
         }
