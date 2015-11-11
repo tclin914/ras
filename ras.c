@@ -241,9 +241,8 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                     dup2(sockfd, STDOUT); /* replace stdout with sockfd */
                     dup2(sockfd, STDERR); /* replace stderr with sockfd */
 
-                    /* execv(command->path, arguments); */
                     execvp(command->command, arguments);
-                    fprintf(stderr, "Unknown Command: [%s].\n", command->command);
+                    fprintf(stderr, "Unknown command: [%s].\n", command->command);
                     exit(1);
                 } else {
                     waitpid((pid_t)pid, &status_pid, 0);
@@ -276,9 +275,9 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                     dup2(filefd, STDOUT); /* replace stdout with fileno(file) */
                     dup2(sockfd, STDERR); /* replace stderr with sockfd */
                     close(filefd);
-                    /* execv(command->path, arguments); */
+
                     execvp(command->command, arguments);
-                    fprintf(stderr, "Unknown Command: [%s].\n", command->command);
+                    fprintf(stderr, "Unknown command: [%s].\n", command->command);
                     exit(1);
                 } else {
                     waitpid((pid_t)pid, &status_pid, 0);
@@ -321,9 +320,8 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                         dup2(readfd, STDIN); /* replace stdin with readfd */
                         close(pfd[0]);
 
-                        /* execv(command->path, arguments); */
                         execvp(command->command, arguments);
-                        fprintf(stderr, "Unknown Command: [%s].\n", command->command);
+                        fprintf(stderr, "Unknown command: [%s].\n", command->command);
                         exit(1);
                     } else {
 
@@ -335,7 +333,6 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                      
                         if (readfd != 0) {
                             close(readfd);
-                            /* printf("close = %d\n", readfd); */
                         }
 
                         if (WIFEXITED(status_pid)) {
@@ -355,9 +352,8 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                         dup2(writefd, std); /* replace stdout or stderr with writefd */
                         dup2(readfd, STDIN); /* replace stdin with readfd */
                         
-                        /* execv(command->path, arguments); */
                         execvp(command->command, arguments);
-                        fprintf(stderr, "Unknown Command: [%s].\n", command->command);
+                        fprintf(stderr, "Unknown command: [%s].\n", command->command);
                         exit(1);
                     } else {
                         waitpid((pid_t)pid, &status_pid, 0);
@@ -417,9 +413,8 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                             dup2(pfd_stderr[1], STDERR);
                             close(pfd_stderr[0]);
 
-                            /* execv(command->path, arguments); */
                             execvp(command->command, arguments);
-                            fprintf(stderr, "Unknown Command: [%s].\n", command->command);
+                            fprintf(stderr, "Unknown command: [%s].\n", command->command);
                             exit(1);
                         } else {
                             waitpid((pid_t)pid, &status_pid, 0);
@@ -454,9 +449,8 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                             dup2(pfd[1], STDERR);
                             close(pfd[0]);
 
-                            /* execv(command->path, arguments); */
                             execvp(command->command, arguments);
-                            fprintf(stderr, "Unknown Command: [%s].\n", command->command);
+                            fprintf(stderr, "Unknown command: [%s].\n", command->command);
                             exit(1);
                         } else {
                             waitpid((pid_t)pid, &status_pid, 0);
@@ -489,9 +483,8 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                         dup2(pfd[1], STDERR); 
                         close(pfd[0]);
 
-                        /* execv(command->path, arguments); */
                         execvp(command->command, arguments);
-                        fprintf(stderr, "Unknown Command: [%s].\n", command->command);
+                        fprintf(stderr, "Unknown command: [%s].\n", command->command);
                         exit(1);
                     } else {
                         waitpid((pid_t)pid, &status_pid, 0);
@@ -524,9 +517,8 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                         dup2(writefd_stderr, STDERR);
                         close(pfd[0]);
 
-                        /* execv(command->path, arguments); */
                         execvp(command->command, arguments);
-                        fprintf(stderr, "Unknown Command: [%s].\n", command->command);
+                        fprintf(stderr, "Unknown command: [%s].\n", command->command);
                         exit(1);
                     } else {
                         waitpid((pid_t)pid, &status_pid, 0);
@@ -554,9 +546,8 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                         /* stderr */
                         dup2(writefd_stderr, STDERR);
 
-                        /* execv(command->path, arguments); */
                         execvp(command->command, arguments);
-                        fprintf(stderr, "Unknown Command: [%s].\n", command->command);
+                        fprintf(stderr, "Unknown command: [%s].\n", command->command);
                         exit(1);
                     } else {
                         waitpid((pid_t)pid, &status_pid, 0);
@@ -588,9 +579,8 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                     dup2(sockfd, STDERR); /* replace stderr with sockfd */
                     close(pfd[0]);
 
-                    /* execv(command->path, arguments); */
                     execvp(command->command, arguments);
-                    fprintf(stderr, "Unknown Command: [%s].\n", command->command);
+                    fprintf(stderr, "Unknown command: [%s].\n", command->command);
                     exit(1);
                 } else {
                     close(pfd[1]);
