@@ -10,6 +10,14 @@
 #include <string.h>
 #include <sys/stat.h> /* open() */
 #include <fcntl.h> /* file control options */
+#include <arpa/inet.h> /* inet_ntoa() */
+
+/* semaphore and shared memory */
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#define CSHMKEY ((key_t)5674)
+#define SEMKEY1 ((key_t)7891)
+#define SEMKEY2 ((key_t)7892)
 
 #define STDIN 0
 #define STDOUT 1
@@ -29,10 +37,19 @@ typedef struct Command {
     struct Command *next;
 } Command;
 
-void doprocessing(int sockfd); 
+typedef struct {
+    unsigned int sockfd;
+    char nickname[1024];
+    char ip[16];
+    unsigned short port;
+} Client;
+
+void doprocessing(int id, int sockfd); 
 void handler(int fd);
-int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], int writefdlist[]);
+int run(int id, int sockfd, int readfd, Command *command,int counter, int readfdlist[], int writefdlist[]);
 int sockfd;
+Client *clientptr;
+int clishmid;
 
 int main(int argc, const char *argv[])
 {
@@ -67,9 +84,38 @@ int main(int argc, const char *argv[])
 
     listen(sockfd, 5);
     clilen = sizeof(cli_addr);
+    if ((clishmid = shmget(CSHMKEY, sizeof(Client) * 30, IPC_CREAT | 0666)) < 0) {
+        perror("ERROR on creating shared memory for clients data");
+        exit(1);
+    }
+
+    if ((clientptr = (Client*)shmat(clishmid, (char*)0, 0)) == NULL) {
+        perror("ERROR on attaching shared memory for clients data");
+        exit(1);
+    }
+
+    /* initialize clients data's sockfd to 0 */
+    int i;
+    for (i = 0; i < 30; i++) {
+        clientptr[i].sockfd = 0;
+    }
+
+    const char *noname = "(no name)";
 
     while (1) {
         newsockfd = accept(sockfd, (struct sockaddr *) &cli_addr, &clilen);
+        
+        /* set client data to shared memory */
+        int i;
+        for (i = 0; i < 30; i++) {
+            if (clientptr[i].sockfd == 0) {
+                clientptr[i].sockfd = newsockfd;
+                memcpy(clientptr[i].nickname, noname, strlen(noname) + 1);
+                memcpy(clientptr[i].ip, inet_ntoa(cli_addr.sin_addr), 16);
+                clientptr[i].port = cli_addr.sin_port;
+                break;
+            }
+        }
 
         if (newsockfd < 0) {
             perror("ERROR on accept");
@@ -88,7 +134,7 @@ int main(int argc, const char *argv[])
             dup2(newsockfd, 0);
             dup2(newsockfd, 1);
             dup2(newsockfd, 2);
-            doprocessing(newsockfd);
+            doprocessing(newsockfd, i);
             close(newsockfd);
             exit(0);
         } else {
@@ -174,7 +220,7 @@ Command *parseCommands(char *commands) {
 }
 
 
-int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], int writefdlist[]) {
+int run(int id, int sockfd, int readfd, Command *command,int counter, int readfdlist[], int writefdlist[]) {
     Command *args = command;
     Command *temp = command;
 
@@ -192,6 +238,22 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
         case e_proc:
             /* exit command */
             if (strcmp(command->command, "exit") == 0) {
+
+                if ((clishmid = shmget(CSHMKEY, sizeof(Client) * 30, IPC_CREAT | 0666)) < 0) {
+                    perror("ERROR on creating shared memory for clients data");
+                    exit(1);
+                }
+
+                if ((clientptr = (Client*)shmat(clishmid, (char*)0, 0)) == NULL) {
+                    perror("ERROR on attaching shared memory for clients data");
+                    exit(1);
+                }
+
+                /* remove client data from shared memory */
+                clientptr[id].sockfd = 0;
+                memset(clientptr[id].nickname, 0, 1024);
+                memset(clientptr[id].ip, 0, 16);
+                clientptr[id].port = 0;
                 return -1;
             /* printenv */
             } else if (strcmp(command->command, "printenv") == 0) {
@@ -207,6 +269,33 @@ int run(int sockfd, int readfd, Command *command,int counter, int readfdlist[], 
                 return 0;
             } else if(strcmp(command->command, "remove") == 0) {
                 setenv(command->next->command, "", 1);
+                return 0;
+            } else if (strcmp(command->command, "who") == 0) {
+
+                if ((clishmid = shmget(CSHMKEY, sizeof(Client) * 30, IPC_CREAT | 0666)) < 0) {
+                    perror("ERROR on creating shared memory for clients data");
+                    exit(1);
+                }
+
+                if ((clientptr = (Client*)shmat(clishmid, (char*)0, 0)) == NULL) {
+                    perror("ERROR on attaching shared memory for clients data");
+                    exit(1);
+                }
+                const char *me = "<-me";
+                fprintf(stdout, "<ID>\t<nickname>\t<IP/port>\t<indicate me>\n");
+                int i;
+                for (i = 0; i < 30; i++) {
+                    if (clientptr[i].sockfd != 0) {
+                                            
+                        if (i == id) {
+                            fprintf(stdout, "%d\t%s\t%s%c%hu\t%s\n", i + 1, clientptr[i].nickname, 
+                                    clientptr[i].ip, '/', clientptr[i].port, me);
+                        } else {
+                            fprintf(stdout, "%d\t%s\t%s%c%hu\n", i + 1, clientptr[i].nickname, 
+                                    clientptr[i].ip, '/', clientptr[i].port);
+                        }
+                    }
+                }
                 return 0;
             }
 
@@ -637,7 +726,7 @@ int readline(int fd,char *ptr,int maxlen) {
 	return(n);
 }      
 
-void doprocessing(int sockfd) {
+void doprocessing(int sockfd, int id) {
     int n;
     int bufferSize = 15001;
     char buffer[bufferSize];
@@ -690,7 +779,7 @@ void doprocessing(int sockfd) {
         /* fflush(stdout); */
         while (go != NULL) {
             
-            status = run(sockfd, readfd, go, counter, readfdlist, writefdlist);
+            status = run(id, sockfd, readfd, go, counter, readfdlist, writefdlist);
             /* printf("status = %d\n", status); */
             /* fflush(stdout); */
             if (status == 0) {
@@ -727,7 +816,7 @@ void doprocessing(int sockfd) {
             readfdlist[counter % 2000] = 0;
             /* printf("counter++\n"); */
             /* fflush(stdout); */
-            printf("counter = %d\n", counter);
+            /* printf("counter = %d\n", counter); */
             counter++;
             move = 0;
         }
