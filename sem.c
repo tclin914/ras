@@ -46,7 +46,7 @@ int sem_create(key_t key, int initval) {
         fprintf(stderr, "Can't get GETVAL\n");
         return -1;
     }
-
+    printf("semval from sem = %d\n", semval);
     union semun {
         int val;
         struct semid_ds *buff;
@@ -113,7 +113,7 @@ int sem_open(key_t key) {
         fprintf(stderr, "Can't open\n");
         return -1;
     }
-    return 0;
+    return id;
 }
 
 int sem_close(int id) {
