@@ -60,6 +60,7 @@ typedef struct {
 
 void doprocessing(int id, int sockfd); 
 void handler(int sig);
+void broadcast(char *message, int *fds);
 int run(int id, int sockfd, int readfd, Command *command,int counter, int readfdlist[], int writefdlist[]);
 int readline(int fd,char *ptr,int maxlen); 
 int sockfd;
@@ -70,12 +71,19 @@ Msg *msgptrs[30];
 int msgshmids[30];
 int clisems[30], sersems[30];
 
-int main(int argc, const char *argv[])
-{
+const char *chatcommands[] = {
+    "tell",
+    "yell",
+    "name"
+};
+
+int fds[30] = {0};
+
+int main(int argc, const char *argv[]) {
     int ret = chdir("/u/gcs/103/0356100/ras/dir");
 
     signal(SIGINT, handler);
-
+    
     int newsockfd, portno, clilen;
     struct sockaddr_in serv_addr, cli_addr;
     int n, pid;
@@ -115,7 +123,7 @@ int main(int argc, const char *argv[])
     FD_SET(sockfd, &afds);
 
 	char buffer[15001];
-	bzero(buffer, 15001);
+    bzero(buffer, 15001);
 
     if ((clishmid = shmget(CSHMKEY, sizeof(Client) * 30, IPC_CREAT | 0666)) < 0) {
         perror("ERROR on creating shared memory for clients data");
@@ -158,7 +166,7 @@ int main(int argc, const char *argv[])
             exit(1);
         }
     }
-    int fds[30] = {0};
+    
     while (1) {
         memcpy(&rfds, &afds, sizeof(rfds));
         memcpy(&wfds, &afds, sizeof(wfds));
@@ -168,9 +176,9 @@ int main(int argc, const char *argv[])
         }
 
         if (FD_ISSET(sockfd, &rfds)) {
-            printf("debug\n");        
-			newsockfd = accept(sockfd, (struct sockaddr *) &cli_addr, &clilen);
-		
+			
+            newsockfd = accept(sockfd, (struct sockaddr *) &cli_addr, &clilen);
+	        printf("newsockfd = %d\n", newsockfd);	
 			/* set client data to shared memory  */
 			int i;
 			for (i = 0; i < 30; i++) {
@@ -197,17 +205,20 @@ int main(int argc, const char *argv[])
 			}
 
 			if (pid == 0) {
-                printf("fork\n");
 				close(sockfd);
 				dup2(newsockfd, 0);
 				dup2(newsockfd, 1);
 				dup2(newsockfd, 2);
 				doprocessing(newsockfd, i);
+                printf("newsockfd = %d\n", newsockfd);
 				close(newsockfd);
-                fds[i] = 0;
                 FD_CLR(newsockfd, &afds);
+                printf("close\n");
 				exit(0);
 			} else {
+                sprintf(buffer, "*** User '(no name)' entered from (%s/%d). ***\n", clientptr[i].ip, clientptr[i].port);
+                broadcast(buffer, fds);
+
 				FD_SET(newsockfd, &afds);
 			}
 		}
@@ -223,9 +234,14 @@ int main(int argc, const char *argv[])
                     }
                 }
 
+                printf("recv = %s\n", buffer);
+                printf("n = %d\n", n);
+                /* Command *head = parseCommands(commands); */
+                
                 sem_wait(sersems[l]);
                 memcpy(msgptrs[l]->message, buffer, strlen(buffer) + 1);
                 msgptrs[l]->len = n;
+                msgptrs[l]->type = e_command;
                 sem_signal(clisems[l]);
             }
 
@@ -267,6 +283,18 @@ void handler(int sig) {
         sem_close(sersems[i]);
     }
     exit(0);
+}
+
+void broadcast(char *message, int *fds) {
+    int i;
+    for (i = 0; i < 30; i++) {
+        if (fds[i] != 0) {
+            sem_wait(sersems[i]);
+            memcpy(msgptrs[i]->message, message, strlen(message) + 1);
+            msgptrs[i]->type = e_message;
+            sem_signal(clisems[i]);
+        }
+    }
 }
 
 /* parse input command line */
@@ -361,22 +389,6 @@ int run(int id, int sockfd, int readfd, Command *command,int counter, int readfd
         case e_proc:
             /* exit command */
             if (strcmp(command->command, "exit") == 0) {
-
-                if ((clishmid = shmget(CSHMKEY, sizeof(Client) * 30, 0)) < 0) {
-                    perror("ERROR on getting shared memory for clients data");
-                    exit(1);
-                }
-
-                if ((clientptr = (Client*)shmat(clishmid, (char*)0, 0)) == NULL) {
-                    perror("ERROR on attaching shared memory for clients data");
-                    exit(1);
-                }
-
-                /* remove client data from shared memory */
-                clientptr[id].sockfd = 0;
-                memset(clientptr[id].nickname, 0, 1024);
-                memset(clientptr[id].ip, 0, 16);
-                clientptr[id].port = 0;
                 return -1;
             /* printenv */
             } else if (strcmp(command->command, "printenv") == 0) {
@@ -871,44 +883,67 @@ void doprocessing(int sockfd, int id) {
     int writefdlist[2000] = {0};
     int counter = 0;
 
-    int msgshmid;
-    Msg *msgptr;
-    /* get shared memory */
-    if ((msgshmid = shmget(MSHMKEY + id, sizeof(Msg), 0)) < 0) {
-		perror("ERROR on creating shared memory for clients data");
-		exit(1);
-	}
-	if ((msgptr = (Msg*)shmat(msgshmid, (char*)0, 0)) == NULL) {
-		perror("ERROR on attaching shared memory for clients data");
-		exit(1);
+    int msgshmids[30];
+    Msg *msgptrs[30];
+    /* create shared memory for message */
+    int k;
+    for (k = 0; k < 30; k++) {
+        if ((msgshmids[k] = shmget(MSHMKEY + k, sizeof(Msg), 0)) < 0) {
+            perror("ERROR on opening shared memory for clients data");
+            exit(1);
+        }
+        if ((msgptrs[k] = (Msg*)shmat(msgshmids[k], (char*)0, 0)) == NULL) {
+            perror("ERROR on attaching shared memory for clients data");
+            exit(1);
+        }
     }
-    int clisem, sersem;
-    /* open semaphore */
-    if ((clisem = sem_open(SEMKEY1 + id)) < 0) {
-        perror("ERROR on opening semaphore");
-        exit(1);
+    int clisems[30], sersems[30];
+    /* create semaphore */
+    int j;
+    for (j = 0; j < 30; j++) {
+        if ((clisems[j] = sem_open(SEMKEY1 + j)) < 0) {
+            perror("ERROR on opening semaphore");
+            exit(1);
+        }
+        if ((sersems[j] = sem_open(SEMKEY2 + j)) < 0) {
+            perror("ERROR on opening semaphore");
+            exit(1);
+        }
     }
-    if ((sersem = sem_open(SEMKEY2 + id)) < 0) {
-        perror("ERROR on opening semaphore");
-        exit(1);
+    sem_wait(clisems[id]);
+
+    if (msgptrs[id]->type == e_message) {
+        fprintf(stdout, msgptrs[id]->message);
+        fflush(stdout);
     }
+
+    sem_signal(sersems[id]);
 
     while (1) {
         printf(prompt);
         fflush(stdout);
 	
-        sem_wait(clisem);
-        
-        if (msgptr->len == 0) {
-            break;
-        } else if (msgptr->len == 2) {
+        sem_wait(clisems[id]);
+ 
+        if (msgptrs[id]->type == e_message) {
+            fprintf(stdout, msgptrs[id]->message);
+            fflush(stdout);
+            sem_signal(sersems[id]);
             continue;
+        } else {
+            if (msgptrs[id]->len == 0) {
+                break;
+            } else if (msgptrs[id]->len == 2) {
+                sem_signal(sersems[id]);
+                continue;
+            }
         }
-        /* remove 13 enter key and 10 next key */
-        memcpy(buffer, msgptr->message, strlen(msgptr->message) + 1);
-        buffer[msgptr->len - 2] = '\0';
         
-        sem_signal(sersem);
+        /* remove 13 enter key and 10 next key */
+        memcpy(buffer, msgptrs[id]->message, strlen(msgptrs[id]->message) + 1);
+        buffer[msgptrs[id]->len - 1] = '\0';
+        
+        sem_signal(sersems[id]);
         
         char *commands = buffer;
         Command *head = parseCommands(commands);
@@ -955,6 +990,24 @@ void doprocessing(int sockfd, int id) {
         }
 
         if (status == -1) {
+            /* int clishmid; */
+            /* Client* clientptr; */
+            /* if ((clishmid = shmget(CSHMKEY, sizeof(Client) * 30, 0)) < 0) { */
+                /* perror("ERROR on getting shared memory for clients data"); */
+                /* exit(1); */
+            /* } */
+
+            /* if ((clientptr = (Client*)shmat(clishmid, (char*)0, 0)) == NULL) { */
+                /* perror("ERROR on attaching shared memory for clients data"); */
+                /* exit(1); */
+            /* } */
+
+            /* [> remove client data from shared memory <] */
+            /* clientptr[id].sockfd = 0; */
+            /* memset(clientptr[id].nickname, 0, 1024); */
+            /* memset(clientptr[id].ip, 0, 16); */
+            /* clientptr[id].port = 0; */
+            printf("debug\n");
             return;
         }
     
