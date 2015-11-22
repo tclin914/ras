@@ -14,6 +14,8 @@
 #include <signal.h>
 #include <errno.h>
 
+#include "fifo.h"
+
 /* semaphore and shared memory */
 #include <sys/ipc.h>
 #include <sys/shm.h>
@@ -33,7 +35,9 @@ typedef enum {
     e_argv = 1, 
     e_stdout = 2, 
     e_stderr = 3,
-    e_outfile = 4
+    e_outfile = 4,
+    e_public_out = 5,
+    e_public_in = 6
 } CommandType;
 
 typedef struct Command {
@@ -44,7 +48,7 @@ typedef struct Command {
 
 typedef struct {
     unsigned int sockfd;
-    char nickname[1024];
+    char nickname[21];
     char ip[16];
     unsigned short port;
 } Client;
@@ -66,8 +70,8 @@ void doprocessing(int id, int sockfd);
 void handler(int sig);
 void broadcast(char *message, MsgType type, int *fds);
 Command *parseCommands(char *commands);
-int run(int id, int sockfd, int readfd, Command *command,int counter, int readfdlist[], int writefdlist[]);
 int readline(int fd,char *ptr,int maxlen); 
+int run(int id, int sockfd, int readfd, Command *command,int counter, int readfdlist[], int writefdlist[], char* commands, Msg *msgptrs[], int sersems[], int clisems[]);
 int sockfd;
 Client *clientptr;
 int clishmid;
@@ -76,11 +80,11 @@ Msg *msgptrs[30];
 int msgshmids[30];
 int clisems[30], sersems[30];
 
-const char *chatcommands[] = {
-    "tell",
-    "yell",
-    "name"
-};
+void handle_sigchld(int sig) {
+    while (waitpid((pid_t)(-1), 0, WNOHANG) > 0) {
+        printf("%s", "child exit\n"); 
+    }   
+}
 
 int fds[30] = {0};
 
@@ -90,10 +94,21 @@ int main(int argc, const char *argv[]) {
     int ret = chdir("/u/gcs/103/0356100/ras/dir");
 
     signal(SIGINT, handler);
+    
+    struct sigaction sa;
+    sa.sa_handler = &handle_sigchld;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+    if (sigaction(SIGCHLD, &sa, 0) == -1) {
+        perror(0);
+        exit(1);
+    }
+
     /* signal(SIGUSR1, handler); */
     int newsockfd, portno, clilen;
     struct sockaddr_in serv_addr, cli_addr;
-    int n, pid, ppid;
+    int n, pid;
+    int pids[30];
 
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
 
@@ -178,8 +193,11 @@ int main(int argc, const char *argv[]) {
     
     while (1) {
         memcpy(&rfds, &afds, sizeof(rfds));
-        memcpy(&wfds, &afds, sizeof(wfds));
+        /* memcpy(&wfds, &afds, sizeof(wfds)); */
         if (select(nfds, &rfds, (fd_set*)0, (fd_set*)0, (struct timeval*)0) < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
             perror("ERROR on select");
             exit(1);
         }
@@ -217,9 +235,10 @@ int main(int argc, const char *argv[]) {
 				dup2(newsockfd, 1);
 				dup2(newsockfd, 2);
 				doprocessing(newsockfd, i);
-				close(newsockfd);
-				exit(0);
+                close(newsockfd);
+                exit(0);
 			} else {
+                pids[i] = pid;
                 sprintf(msg_buf, "*** User '(no name)' entered from (%s/%d). ***\n", clientptr[i].ip, clientptr[i].port);
                 broadcast(msg_buf, e_message, fds);
 				bzero(msg_buf, 15001);
@@ -229,6 +248,7 @@ int main(int argc, const char *argv[]) {
 
         for (fd = 0; fd < nfds; fd++) {
             if (fd != sockfd && FD_ISSET(fd, &rfds)) {
+                printf("rfd = %d\n", fd);
                 n = readline(fd, buffer, sizeof(buffer) - 1);
          
                 /* get client's id by client'fd */
@@ -238,22 +258,27 @@ int main(int argc, const char *argv[]) {
                         break;
                     }
                 }
-                
+                printf("xx = %s\n", buffer);
+                /* exit */
                 if (strncmp(buffer, "exit", 4) == 0) {
                     sem_wait(sersems[l]);
                     msgptrs[l]->type = e_exit_command;
+                    sem_signal(clisems[l]);
                     sprintf(msg_buf, "*** User '%s' left. ***\n", clientptr[l].nickname);
                     fds[l] = 0;
                     /* broadcast all clients that someone left */
                     broadcast(msg_buf, e_message, fds);
                     bzero(msg_buf, 15001);
                     close(fd);
+                    printf("close(fd) = %d\n", fd);
                     FD_CLR(fd, &afds);
-                    sem_signal(clisems[l]);
+                    printf("exit\n");
+                /* yell */
                 } else if (strncmp(buffer, "yell", 4) == 0) {
                     buffer[n - 1] = '\0';
-                    sprintf(msg_buf, "*** %s yelled ***: %s\n", clientptr[l].nickname, buffer + 4);
+                    sprintf(msg_buf, "*** %s yelled ***: %s\n", clientptr[l].nickname, buffer + 5);
                     broadcast(msg_buf, e_message, fds);
+                /* tell */
                 } else if (strncmp(buffer, "tell", 4) == 0) {
                     int receiver_id;
                     int msg[1025];
@@ -282,7 +307,35 @@ int main(int argc, const char *argv[]) {
                         sem_signal(clisems[l]);
                     }
                     bzero(msg_buf, 15001);
+                } else if (strncmp(buffer, "name", 4) == 0) {
+                    /* TODO: */
+                    buffer[n - 2] = '\0';
+                    int isSame = 1;
+                    int i;
+                    for (i = 0; i < 30; i++) {
+                        if (strcmp(clientptr[i].nickname, buffer + 5) == 0) {
+                            sem_wait(sersems[l]);
+                            sprintf(msg_buf, "*** User '%s' already exists. ***\n", buffer + 4);
+                            memcpy(msgptrs[l]->message, msg_buf, strlen(msg_buf) + 1);
+                            msgptrs[l]->type = e_message;
+                            msgptrs[l]->len = strlen(msg_buf) + 1;
+                            sem_signal(clisems[l]);
+                            isSame = 0;
+                            break;
+                        }
+                    }
+
+                    if (isSame == 1) {
+                        memcpy(clientptr[l].nickname, buffer + 5, strlen(buffer) - 4);
+
+                        /* signal client to send prompt */
+                        sem_wait(sersems[l]);
+                        msgptrs[l]->type = e_none;
+                        sem_signal(clisems[l]);
+                    }
+
                 } else {
+                    printf("recv = %s\n", buffer);
                     sem_wait(sersems[l]);
                     memcpy(msgptrs[l]->message, buffer, n);
                     msgptrs[l]->len = n;
@@ -292,12 +345,12 @@ int main(int argc, const char *argv[]) {
 
             }
 
-            if (fd != sockfd && FD_ISSET(fd, &wfds)) {
-                printf("wfds %d\n", fd);
-           }
-        }
+            /* if (fd != sockfd && FD_ISSET(fd, &wfds)) { */
+                /* printf("wfds %d\n", fd); */
+           /* } */
+        }    
+        bzero(buffer, 15001);
     }
-    bzero(buffer, 15001);
 	close(sockfd);
     return 0;
 }
@@ -311,8 +364,6 @@ void handler(int sig) {
                 printf("i = %d\n", i);
                 printf("fds[%d] = %d\n", i, fds[i]);
                 FD_CLR(fds[i], &afds);
-                close(fds[i]);
-                fds[i] = 0;
                 break;
             }
         }
@@ -343,6 +394,7 @@ void handler(int sig) {
         sem_close(clisems[i]);
         sem_close(sersems[i]);
     }
+    unlink_ALL_FIFO();
     exit(0);
 }
 
@@ -416,6 +468,24 @@ Command *parseCommands(char *commands) {
         
             pre->next = current;
             pre = current;
+        } else if (*pch - '>' == 0) {
+            /* public pipe out */
+            Command *current = (Command*)malloc(sizeof(Command));
+            current->command = pch + 1;
+            current->commandType = e_public_out;
+            current->next = NULL;
+
+            pre->next = current;
+            pre = current;
+        } else if (*pch - '<' == 0) {
+            /* public pipe in */
+            Command *current = (Command*)malloc(sizeof(Command));
+            current->command = pch + 1;
+            current->commandType = e_public_in;
+            current->next = NULL;
+
+            pre->next = current;
+            pre = current;
         } else {
             /* arguments */
             Command *current = (Command*)malloc(sizeof(Command));
@@ -433,7 +503,7 @@ Command *parseCommands(char *commands) {
 }
 
 
-int run(int id, int sockfd, int readfd, Command *command,int counter, int readfdlist[], int writefdlist[]) {
+int run(int id, int sockfd, int readfd, Command *command,int counter, int readfdlist[], int writefdlist[], char *commands, Msg *msgptrs[], int sersems[], int clisems[]) {
     Command *args = command;
     Command *temp = command;
 
@@ -468,7 +538,8 @@ int run(int id, int sockfd, int readfd, Command *command,int counter, int readfd
                 setenv(command->next->command, "", 1);
                 return 0;
             } else if (strcmp(command->command, "who") == 0) {
-
+                int clishmid;
+                Client *clientptr;
                 if ((clishmid = shmget(CSHMKEY, sizeof(Client) * 30, 0)) < 0) {
                     perror("ERROR on getting shared memory for clients data");
                     exit(1);
@@ -483,7 +554,6 @@ int run(int id, int sockfd, int readfd, Command *command,int counter, int readfd
                 int i;
                 for (i = 0; i < 30; i++) {
                     if (clientptr[i].sockfd != 0) {
-                                            
                         if (i == id) {
                             fprintf(stdout, "%d\t%s\t%s%c%hu\t%s\n", i + 1, clientptr[i].nickname, 
                                     clientptr[i].ip, '/', clientptr[i].port, me);
@@ -492,6 +562,10 @@ int run(int id, int sockfd, int readfd, Command *command,int counter, int readfd
                                     clientptr[i].ip, '/', clientptr[i].port);
                         }
                     }
+                }
+                if (shmdt(clientptr) < 0) {
+                    perror("ERROR on deattaching shared memory for clients data");
+                    exit(1);
                 }
                 return 0;
             }
@@ -515,6 +589,11 @@ int run(int id, int sockfd, int readfd, Command *command,int counter, int readfd
                     close(writefdlist[counter]);
                 }
 
+                /* char buffer[256]; */
+                /* int n; */
+                /* n = read(readfd, buffer, 256); */
+                /* printf("%s\n", buffer); */
+                
                 pid = fork();
                 
                 if (pid < 0) {
@@ -522,11 +601,11 @@ int run(int id, int sockfd, int readfd, Command *command,int counter, int readfd
                     exit(1);
                 }
 
-                if (pid == 0) { 
-                    dup2(readfd, STDIN); /* replace stdin with readfd */
+                if (pid == 0) {
+                    dup2(readfd, STDIN); /* replace stdin with readfd */ 
                     dup2(sockfd, STDOUT); /* replace stdout with sockfd */
                     dup2(sockfd, STDERR); /* replace stderr with sockfd */
-
+                    
                     execvp(command->command, arguments);
                     fprintf(stderr, "Unknown command: [%s].\n", command->command);
                     exit(1);
@@ -534,7 +613,7 @@ int run(int id, int sockfd, int readfd, Command *command,int counter, int readfd
                     waitpid((pid_t)pid, &status_pid, 0);
                     
                     if (WIFEXITED(status_pid)) {
-                        if (WEXITSTATUS(status_pid) == 0) { 
+                        if (WEXITSTATUS(status_pid) == 0) {
                             return 0;
                         }
                         return 1;
@@ -573,6 +652,139 @@ int run(int id, int sockfd, int readfd, Command *command,int counter, int readfd
                     }
                     return 0;
                 }
+            } else if (args->next->commandType == e_public_out) {
+                /* close writefd */
+                if (writefdlist[counter] != 0) {
+                    close(writefdlist[counter]);
+                }
+
+                int index = atoi(args->next->command);
+                index = index - 1;
+                if (create_FIFO(index) < 0) {
+                    fprintf(stderr, "*** Error: public pipe #%d already exists. ***\n", index + 1);
+                    return 0;
+                }
+                int write, read;
+                open_FIFO(index, &read, &write); 
+        
+                pid = fork();
+
+                if (pid < 0) {
+                    perror("ERROR on fork");
+                    exit(1);
+                }
+
+                if (pid == 0) {
+                    dup2(write, STDOUT);
+                    dup2(write, STDERR);
+                    dup2(readfd, STDIN);
+
+                    execvp(command->command, arguments);
+                    fprintf(stderr, "Unknown command: [%s].\n", command->command);
+                    exit(1);
+                } else { 
+                    waitpid((pid_t)pid, &status_pid, 0);
+                        
+                    if (WIFEXITED(status_pid)) {
+                        if (WEXITSTATUS(status_pid) == 0) {
+                            if ((clishmid = shmget(CSHMKEY, sizeof(Client) * 30, 0)) < 0) {
+                                perror("ERROR on getting shared memory for clients data");
+                                exit(1);
+                            }
+
+                            if ((clientptr = (Client*)shmat(clishmid, (char*)0, 0)) == NULL) {
+                                perror("ERROR on attaching shared memory for clients data");
+                                exit(1);
+                            }
+                            /* broadcast public pipe created event */
+                            char msg_buf[1024];
+                            sprintf(msg_buf, "*** %s #%d just piped '%s' ***\n", clientptr[id].nickname, id, commands);
+                            int i;
+                            for (i = 0; i < 30; i++) {
+                                if (clientptr[i].sockfd != 0 && i != id) {
+                                    sem_wait(sersems[i]);
+                                    memcpy(msgptrs[i]->message, msg_buf, strlen(msg_buf) + 1);
+                                    msgptrs[i]->type = e_message;
+                                    msgptrs[i]->len = strlen(msg_buf) + 1;
+                                    sem_signal(clisems[i]);
+                                }
+                            }
+                            /* close(write); */
+                            /* close(read); */
+                            return 0;
+                        } else { 
+                            unlink_FIFO(index);
+                            return 1;
+                        }
+                    }
+                    return 0;    
+                }
+            } else if (args->next->commandType == e_public_in && args->next->next == NULL) {
+                /* close writefd */
+                if (writefdlist[counter] != 0) {
+                    close(writefdlist[counter]);
+                }
+
+                int index = atoi(args->next->command);
+                index = index - 1;
+                int writeFIFO, readFIFO;
+                if (open_FIFO(index, &readFIFO, &writeFIFO) < 0) {
+                    fprintf(stderr, "*** Error: public pipe #%d does not already exists. ***\n", index + 1);
+                    return 0;
+                }
+                /* printf("write = %d\n", writeFIFO); */
+                /* printf("read = %d\n", readFIFO);  */
+                pid = fork();
+
+                if (pid < 0) {
+                    perror("ERROR on fork");
+                    exit(1);
+                }
+
+                if (pid == 0) {
+                    dup2(sockfd, STDOUT);
+                    dup2(sockfd, STDERR);
+                    dup2(readFIFO, STDIN);
+
+                    execvp(command->command, arguments);
+                    fprintf(stderr, "Unknown command: [%s].\n", command->command);
+                    exit(1);
+                } else { 
+                    waitpid((pid_t)pid, &status_pid, 0);
+                        
+                    if (WIFEXITED(status_pid)) {
+                        if (WEXITSTATUS(status_pid) == 0) {
+                            if ((clishmid = shmget(CSHMKEY, sizeof(Client) * 30, 0)) < 0) {
+                                perror("ERROR on getting shared memory for clients data");
+                                exit(1);
+                            }
+
+                            if ((clientptr = (Client*)shmat(clishmid, (char*)0, 0)) == NULL) {
+                                perror("ERROR on attaching shared memory for clients data");
+                                exit(1);
+                            }
+                            /* broadcast public pipe received event */
+                            char msg_buf[1024];
+                            sprintf(msg_buf, "*** %s #%d just received via '%s' ***\n", clientptr[id].nickname, id, commands);
+                            int i;
+                            for (i = 0; i < 30; i++) {
+                                if (clientptr[i].sockfd != 0 && i != id) {
+                                    sem_wait(sersems[i]);
+                                    memcpy(msgptrs[i]->message, msg_buf, strlen(msg_buf) + 1);
+                                    msgptrs[i]->type = e_message;
+                                    msgptrs[i]->len = strlen(msg_buf) + 1;
+                                    sem_signal(clisems[i]);
+                                }
+                            }
+                            unlink_FIFO(index);
+                            return 0;
+                        } else { 
+                            return 1;
+                        }
+                    }
+                    return 0;    
+                }
+
             /* 1 numbered-pipe */
             } else if ((args->next->commandType == e_stdout ||
                     args->next->commandType == e_stderr) && args->next->next == NULL) {
@@ -584,7 +796,6 @@ int run(int id, int sockfd, int readfd, Command *command,int counter, int readfd
                 /* close writefd */
                 if (writefdlist[counter] != 0) {
                     close(writefdlist[counter]);
-                    /* printf("close write = %d\n", writefdlist[counter]); */
                 }
                 
                 /* if pipe is not already exist */
@@ -856,7 +1067,18 @@ int run(int id, int sockfd, int readfd, Command *command,int counter, int readfd
                     perror("ERROR creating a pipe");
                     exit(1);
                 }
-                
+                int index = -1;
+                int writeFIFO, readFIFO;
+                if (args->next->commandType == e_public_in) {
+                    index = atoi(args->next->command);
+                    index = index - 1;
+                    int writeFIFO, readFIFO;
+                    if (open_FIFO(index, &readFIFO, &writeFIFO) < 0) {
+                        fprintf(stderr, "*** Error: public pipe #%d does not already exists. ***\n", index + 1);
+                        return 0;
+                    }
+                    readfd = readFIFO;
+                }
                 pid = fork();
                     
                 if (pid == 0) {
@@ -864,7 +1086,7 @@ int run(int id, int sockfd, int readfd, Command *command,int counter, int readfd
                     dup2(pfd[1], STDOUT); /* replace stdout with pfd[1] */
                     dup2(sockfd, STDERR); /* replace stderr with sockfd */
                     close(pfd[0]);
-
+                    
                     execvp(command->command, arguments);
                     fprintf(stderr, "Unknown command: [%s].\n", command->command);
                     exit(1);
@@ -875,10 +1097,35 @@ int run(int id, int sockfd, int readfd, Command *command,int counter, int readfd
                     if (readfd != 0) {
                         close(readfd);   
                     }
-                   
+
                     if (WIFEXITED(status_pid)) {
                         if(WEXITSTATUS(status_pid) == 0) {
-                            readfdlist[counter] = pfd[0];                    
+                            readfdlist[counter % 2000] = pfd[0];                    
+                            if (index != -1) {
+                                if ((clishmid = shmget(CSHMKEY, sizeof(Client) * 30, 0)) < 0) {
+                                    perror("ERROR on getting shared memory for clients data");
+                                    exit(1);
+                                }
+
+                                if ((clientptr = (Client*)shmat(clishmid, (char*)0, 0)) == NULL) {
+                                    perror("ERROR on attaching shared memory for clients data");
+                                    exit(1);
+                                }
+                                /* broadcast public pipe received event */
+                                char msg_buf[1024];
+                                sprintf(msg_buf, "*** %s #%d just received via '%s' ***\n", clientptr[id].nickname, id, commands);
+                                int i;
+                                for (i = 0; i < 30; i++) {
+                                    if (clientptr[i].sockfd != 0 && i != id) {
+                                        sem_wait(sersems[i]);
+                                        memcpy(msgptrs[i]->message, msg_buf, strlen(msg_buf) + 1);
+                                        msgptrs[i]->type = e_message;
+                                        msgptrs[i]->len = strlen(msg_buf) + 1;
+                                        sem_signal(clisems[i]);
+                                    }
+                                }
+                                unlink_FIFO(index);
+                            }
                             return 0;
                         }
                         return 1;
@@ -923,12 +1170,14 @@ int readline(int fd,char *ptr,int maxlen) {
 	return(n);
 }      
 
+
 void doprocessing(int sockfd, int id) {
     int n;
     int bufferSize = 15001;
     char buffer[bufferSize];
     bzero(buffer, bufferSize);
-    
+    init_FIFO();
+
     const char *welcome = 
         "****************************************\n"
         "** Welcome to the information server. **\n"
@@ -960,7 +1209,7 @@ void doprocessing(int sockfd, int id) {
         }
     }
     int clisems[30], sersems[30];
-    /* create semaphore */
+    /* open semaphore */
     int j;
     for (j = 0; j < 30; j++) {
         if ((clisems[j] = sem_open(SEMKEY1 + j)) < 0) {
@@ -1020,12 +1269,24 @@ void doprocessing(int sockfd, int id) {
 
             /* remove client data from shared memory  */
             clientptr[id].sockfd = 0;
-            memset(clientptr[id].nickname, 0, 1024);
+            memset(clientptr[id].nickname, 0, 21);
             memset(clientptr[id].ip, 0, 16);
             clientptr[id].port = 0;
             if (shmdt(clientptr) < 0) {
                 perror("ERROR on deattaching shared memory for clients data");
                 exit(1);
+            }
+            sem_signal(sersems[id]);
+
+            for (j = 0; j < 30; j++) {
+                if (sem_close(sersems[j]) < 0) {
+                    perror("ERROR on closeing semaphore");
+                    exit(1);
+                }
+                if (sem_close(clisems[j]) < 0) {
+                    perror("ERROR on opening semaphore");
+                    exit(1);
+                }
             }
             return;
         } else if (msgptrs[id]->type == e_none) {
@@ -1042,11 +1303,18 @@ void doprocessing(int sockfd, int id) {
         
         /* remove 13 enter key and 10 next key */
         memcpy(buffer, msgptrs[id]->message, msgptrs[id]->len);
-        buffer[msgptrs[id]->len - 1] = '\0';
+        if (buffer[msgptrs[id]->len - 1] == 10) {
+            buffer[msgptrs[id]->len - 1] = '\0';
+        } else {
+            buffer[msgptrs[id]->len - 2] = '\0';
+        }
         sem_signal(sersems[id]);
-        
-        char *commands = buffer;
-        Command *head = parseCommands(commands);
+       
+        char *commands = (char*)malloc(sizeof(char) * (strlen(buffer) + 1));
+        memcpy(commands, buffer, strlen(buffer) + 1);
+        /* char *commands = buffer; */
+
+        Command *head = parseCommands(buffer);
         Command *go = head;
 
         int retfd, status;
@@ -1054,7 +1322,8 @@ void doprocessing(int sockfd, int id) {
         int readfd = readfdlist[counter % 2000];
         while (go != NULL) {
             
-            status = run(id, sockfd, readfd, go, counter, readfdlist, writefdlist);
+            status = run(id, sockfd, readfd, go, counter, readfdlist, writefdlist, commands, msgptrs, sersems, clisems);
+            /* printf("status = %d\n", status); */
             if (status == 0) {
                 move = 1;
             } else if (status == 1) {
@@ -1067,6 +1336,9 @@ void doprocessing(int sockfd, int id) {
                         go->next->commandType == e_outfile)) {
                 go = go->next;
             }
+            if (go->next != NULL && go->next->commandType == e_public_in && go->next->next != NULL) {
+                go = go->next; 
+            }
             go = go->next;
         }
         
@@ -1077,6 +1349,7 @@ void doprocessing(int sockfd, int id) {
             head = head->next;
             free(tmp);
         }
+        free(commands);
 
         if (status == -1) {
 
