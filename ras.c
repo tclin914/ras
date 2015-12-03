@@ -79,10 +79,11 @@ int clishmid;
 Msg *msgptrs[30];
 int msgshmids[30];
 int clisems[30], sersems[30];
-
+int killid;
 void handle_sigchld(int sig) {
     while (waitpid((pid_t)(-1), 0, WNOHANG) > 0) {
         printf("%s", "child exit\n"); 
+        /* kill(killid, SIGKILL); */
     }   
 }
 
@@ -210,8 +211,10 @@ int main(int argc, const char *argv[]) {
 				if (clientptr[i].sockfd == 0) { /*   */
 					clientptr[i].sockfd = newsockfd;
 					memcpy(clientptr[i].nickname, noname, strlen(noname) + 1);
-					memcpy(clientptr[i].ip, inet_ntoa(cli_addr.sin_addr), 16);
-					clientptr[i].port = cli_addr.sin_port;
+					/* memcpy(clientptr[i].ip, inet_ntoa(cli_addr.sin_addr), 16); */
+					/* clientptr[i].port = cli_addr.sin_port; */
+                    memcpy(clientptr[i].ip, "CGILAB", 7);
+                    clientptr[i].port = 511;
                     fds[i] = newsockfd;
 					break;
 				}
@@ -258,7 +261,7 @@ int main(int argc, const char *argv[]) {
                         break;
                     }
                 }
-                printf("xx = %s\n", buffer);
+                
                 /* exit */
                 if (strncmp(buffer, "exit", 4) == 0) {
                     sem_wait(sersems[l]);
@@ -272,6 +275,9 @@ int main(int argc, const char *argv[]) {
                     close(fd);
                     printf("close(fd) = %d\n", fd);
                     FD_CLR(fd, &afds);
+                    killid = pids[l];
+                    kill(pids[l], SIGKILL);
+                    continue;
                     printf("exit\n");
                 /* yell */
                 } else if (strncmp(buffer, "yell", 4) == 0) {
@@ -335,7 +341,6 @@ int main(int argc, const char *argv[]) {
                     }
 
                 } else {
-                    printf("recv = %s\n", buffer);
                     sem_wait(sersems[l]);
                     memcpy(msgptrs[l]->message, buffer, n);
                     msgptrs[l]->len = n;

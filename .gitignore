@@ -1,2 +1,4 @@
 ras
-
+fifo
+fifo.o
+sem.o
